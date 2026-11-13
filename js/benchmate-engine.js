@@ -37,9 +37,9 @@
         models: "benchmarks",
         system: "benchmarks",
         coverage: "results",
-        ssh: "ssh",
-        setup: "ssh",
-        remote: "ssh"
+        ssh: "setup",
+        setup: "setup",
+        remote: "setup"
       };
       if (legacyTabMap[merged.ui.activeTab]) {
         merged.ui.activeTab = legacyTabMap[merged.ui.activeTab];
@@ -631,6 +631,67 @@
       });
     }
 
+    const lp = state.suites.llmperf;
+    const lpReqCtx = (Number(lp.meanInput) || 1024) + 2 * (Number(lp.stddevInput) || 0) + (Number(lp.meanOutput) || 256) + 64;
+    if (lpReqCtx > Number(lp.c)) {
+      warnings.push({
+        id: "ctx_llmperf",
+        severity: "crimson",
+        suiteId: "llmperf",
+        title: `Context Overflow on llmperf (${lpReqCtx} > ${lp.c})`,
+        detail: `Mean input (${lp.meanInput}) + 2x stddev (${2 * (Number(lp.stddevInput) || 0)}) + output (${lp.meanOutput}) + 64 overhead exceeds Server -c ${lp.c}.`,
+        fixLabel: `Auto-Fix (-c ${Math.max(32768, lpReqCtx + 1024)})`
+      });
+    }
+
+    const sb = state.suites.speed_bench;
+    const sbReqCtx = 16384 + (Number(sb.osl) || 1024) + 64;
+    if (sbReqCtx > Number(sb.c)) {
+      warnings.push({
+        id: "ctx_speed_bench",
+        severity: "crimson",
+        suiteId: "speed_bench",
+        title: `Context Overflow Risk on SPEED-Bench (${sbReqCtx} > ${sb.c})`,
+        detail: `Long-context qualitative prompts + OSL (${sb.osl}) + 64 template overhead exceed Server -c ${sb.c}.`,
+        fixLabel: `Auto-Fix (-c ${Math.max(32768, sbReqCtx + 1024)})`
+      });
+    }
+
+    const astd = state.suites.aiperf_std;
+    const astdReqCtx = (Number(astd.islMean) || 1024) + (Number(astd.oslMean) || 256) + 64;
+    if (astdReqCtx > Number(astd.c)) {
+      warnings.push({
+        id: "ctx_aiperf_std",
+        severity: "crimson",
+        suiteId: "aiperf_std",
+        title: `Context Overflow on AIPerf Standard (${astdReqCtx} > ${astd.c})`,
+        detail: `Mean ISL (${astd.islMean}) + mean OSL (${astd.oslMean}) + 64 template overhead exceeds Server -c ${astd.c}.`,
+        fixLabel: `Auto-Fix (-c ${Math.max(32768, astdReqCtx + 1024)})`
+      });
+    }
+
+    if (sweep.cachePrompt === true) {
+      warnings.push({
+        id: "sweep_cache_prompt",
+        severity: "amber",
+        suiteId: "aiperf_sweep",
+        title: `AIPerf 64k Sweep has cache_prompt:true enabled`,
+        detail: `Reviewer's Guide requires cache_prompt:false so long-context TTFT is not artificially cached between sweep runs.`,
+        fixLabel: `1-Click Set cache_prompt:false`
+      });
+    }
+
+    if (Number(sweep.c) >= 65536 && (sweep.ctk === "fp16" || sweep.ctv === "fp16") && vramCeiling <= 32) {
+      warnings.push({
+        id: "vram_fp16_64k",
+        severity: "amber",
+        suiteId: "aiperf_sweep",
+        title: `FP16 KV cache at 64k+ context risks OOM on ${vramCeiling} GB GPU`,
+        detail: `64k-70k context with FP16 KV exceeds 32 GB VRAM alongside weights; q8_0 KV halves memory overhead.`,
+        fixLabel: `1-Click Enable q8_0 KV Cache`
+      });
+    }
+
     // 2. VRAM & KV Cache Estimator (Model Weight GB + KV Cache GB + 1.5 GB Compute Buffer)
     const maxServerCtx = Math.max(
       Number(state.suites.llama_benchy.c) || 0,
@@ -1158,37 +1219,68 @@
     const profile = global.BenchmateData.HARDWARE_PROFILES[state.hardware.profileId];
     const isWin = profile.os === "windows";
     const benchRoot = state.hardware.benchRoot || profile.defaultBenchRoot;
+    const binDir = state.hardware.binDir || profile.defaultBinDir;
+    const repoDir = state.hardware.repoDir || profile.defaultRepoDir;
+    const modelPath = state.model.fullPath;
+    const modelDir = state.model.baseDir || profile.defaultModelsDir;
+    const port = state.hardware.port || 8080;
 
     const cards = [];
 
-    // Card 1: VRAM & Port Cleanup
     if (isWin) {
       cards.push({
-        id: "setup_cleanup",
-        title: "01 · Pre-Benchmark VRAM & Port Cleanup (Windows)",
-        badge: "VRAM SWEEP",
+        id: "setup_verify",
+        title: `01 · Pre-flight Check: Verify GPU, Binaries, Model .gguf, Python & Venvs (${profile.shortName})`,
+        badge: "PRE-FLIGHT",
         cmd: [
-          `Stop-Process -Name "llama-server" -Force -ErrorAction SilentlyContinue`,
-          profile.id === "amd_win_x64"
-            ? `# Verify GPU Dedicated Memory via Task Manager or amd-smi\namd-smi`
-            : `nvidia-smi`
+          `# Pre-flight Verification — ${profile.name}`,
+          `Write-Host "=== 1. GPU Driver Check ==="`,
+          profile.id === "amd_win_x64" ? `amd-smi` : `nvidia-smi`,
+          `Write-Host "=== 2. Binaries & SPEED-Bench Check ==="`,
+          `@("${binDir}\\llama-bench.exe", "${binDir}\\llama-server.exe", "${repoDir}\\tools\\server\\bench\\speed-bench\\speed_bench.py") | ForEach-Object { if (Test-Path $_) { Write-Host "[OK] $_" } else { Write-Host "[MISSING] $_" } }`,
+          `Write-Host "=== 3. Active GGUF Model & Models Directory ==="`,
+          `if (Test-Path "${modelPath}") { Write-Host "[OK] Active model found: ${modelPath}" } else { Write-Host "[MISSING] Active model not found: ${modelPath}" }`,
+          `Get-ChildItem -Path "${modelDir}" -Filter "*.gguf" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName`,
+          `Write-Host "=== 4. Python, Venvs & Packages ==="`,
+          `py --version`,
+          `if (Test-Path "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe") {`,
+          `  & "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe" -c "import importlib.util; [print('[OK]' if importlib.util.find_spec(m) else '[MISSING]', m) for m in ('llama_benchy','aiperf','ray')]"`,
+          `} else { Write-Host "[MISSING] ${benchRoot}\\.venv-aiperf" }`,
+          `if (Test-Path "${benchRoot}\\llmperf\\token_benchmark_ray.py") { Write-Host "[OK] token_benchmark_ray.py" } else { Write-Host "[MISSING] llmperf repo" }`,
+          `if (Test-Path "${benchRoot}\\.venv-agentperf\\Scripts\\agentperf-local.exe") { Write-Host "[OK] agentperf-local" } else { Write-Host "[MISSING] ${benchRoot}\\.venv-agentperf (agentperf-local)" }`,
+          `Write-Host "=== 5. Port ${port} Availability ==="`,
+          `Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue`
         ].join("\n")
       });
     } else {
       cards.push({
-        id: "setup_cleanup",
-        title: "01 · Pre-Benchmark VRAM & Background AI Sweep (DGX Spark)",
-        badge: "VRAM SWEEP",
-        cmd: buildSshCommands(state).vramSweep
+        id: "setup_verify",
+        title: `01 · Pre-flight Check: Verify GPU, Binaries, Model .gguf, Python & Venvs (${profile.shortName})`,
+        badge: "PRE-FLIGHT",
+        cmd: [
+          `# Pre-flight Verification — ${profile.name}`,
+          `echo "=== 1. GPU Driver Check ===" && nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv,noheader`,
+          `echo "=== 2. Binaries & SPEED-Bench Check ==="`,
+          `for f in "${binDir}/llama-bench" "${binDir}/llama-server" "${repoDir}/tools/server/bench/speed-bench/speed_bench.py"; do test -e "$f" && echo "[OK] $f" || echo "[MISSING] $f"; done`,
+          `echo "=== 3. Active GGUF Model & Models Directory ==="`,
+          `test -f "${modelPath}" && echo "[OK] Active model found: ${modelPath}" || echo "[MISSING] Active model not found: ${modelPath}"`,
+          `find "${modelDir}" -maxdepth 3 -name "*.gguf" 2>/dev/null || true`,
+          `echo "=== 4. Python, Venvs & Packages ==="`,
+          `python3 --version`,
+          `if [ -x "${benchRoot}/.venv-aiperf/bin/python3" ]; then "${benchRoot}/.venv-aiperf/bin/python3" -c "import importlib.util; [print('[OK]' if importlib.util.find_spec(m) else '[MISSING]', m) for m in ('llama_benchy','aiperf','ray')]"; else echo "[MISSING] ${benchRoot}/.venv-aiperf"; fi`,
+          `test -f "${benchRoot}/llmperf/token_benchmark_ray.py" && echo "[OK] token_benchmark_ray.py" || echo "[MISSING] llmperf repo"`,
+          `test -x "${benchRoot}/.venv-agentperf/bin/agentperf-local" && echo "[OK] agentperf-local" || echo "[MISSING] ${benchRoot}/.venv-agentperf (agentperf-local)"`,
+          `echo "=== 5. Port ${port} Availability ==="`,
+          `ss -tulpn | grep ":${port} " || echo "[OK] Port ${port} is free"`
+        ].join("\n")
       });
     }
 
-    // Card 2: Environment & Python Package Setup
     if (profile.id === "dgx_spark_linux_arm64") {
       const aipPkg = state.hardware.nonSudoSetup ? "aiperf" : '"aiperf[tdigest]"';
       cards.push({
         id: "setup_env",
-        title: "02 · DGX Spark ARM64 Venv, crick C Headers & llmperf Python 3.12+ Patch",
+        title: "02 · Install Python Venvs & Benchmark Dependencies (DGX Spark ARM64)",
         badge: "AARCH64 SETUP",
         cmd: [
           state.hardware.nonSudoSetup
@@ -1203,15 +1295,15 @@
           `git clone https://github.com/ray-project/llmperf.git "${benchRoot}/llmperf"`,
           `sed -i 's/<3.11,\\s*//g; s/,\\s*<3.11//g' "${benchRoot}/llmperf/pyproject.toml"`,
           `pip install -e "${benchRoot}/llmperf"`,
-          `# Isolated agentperf environment`,
-          `python3 -m venv "${benchRoot}/.venv-agentperf"`
+          `python3 -m venv "${benchRoot}/.venv-agentperf"`,
+          `"${benchRoot}/.venv-agentperf/bin/pip" install --upgrade pip aa-agentperf-local`
         ].join("\n")
       });
     } else if (profile.id === "rtx_spark_win_arm64") {
       const aipPkg = state.hardware.rtxArmTdigestCompile ? '"aiperf[tdigest]"' : "aiperf";
       cards.push({
         id: "setup_env",
-        title: "02 · Windows ARM64 Venv, AIPerf & PowerShell llmperf Patch",
+        title: "02 · Install Python Venvs & Benchmark Dependencies (Windows ARM64)",
         badge: "WIN ARM64 SETUP",
         cmd: [
           `New-Item -ItemType Directory -Force -Path "${benchRoot}" | Out-Null`,
@@ -1224,13 +1316,14 @@
           `git clone https://github.com/ray-project/llmperf.git "${benchRoot}\\llmperf"`,
           `(Get-Content "${benchRoot}\\llmperf\\pyproject.toml") -replace '<3\\.11,?\\s*|,\\s*<3\\.11', '' | Set-Content "${benchRoot}\\llmperf\\pyproject.toml"`,
           `pip install -e "${benchRoot}\\llmperf"`,
-          `py -m venv "${benchRoot}\\.venv-agentperf"`
+          `py -m venv "${benchRoot}\\.venv-agentperf"`,
+          `& "${benchRoot}\\.venv-agentperf\\Scripts\\pip.exe" install --upgrade pip aa-agentperf-local`
         ].join("\n")
       });
     } else {
       cards.push({
         id: "setup_env",
-        title: `02 · ${profile.shortName} Venv, AIPerf Wheels & PowerShell llmperf Patch`,
+        title: `02 · Install Python Venvs & Benchmark Dependencies (${profile.shortName})`,
         badge: "WIN X64 SETUP",
         cmd: [
           `New-Item -ItemType Directory -Force -Path "${benchRoot}" | Out-Null`,
@@ -1243,55 +1336,61 @@
           `git clone https://github.com/ray-project/llmperf.git "${benchRoot}\\llmperf"`,
           `(Get-Content "${benchRoot}\\llmperf\\pyproject.toml") -replace '<3\\.11,?\\s*|,\\s*<3\\.11', '' | Set-Content "${benchRoot}\\llmperf\\pyproject.toml"`,
           `pip install -e "${benchRoot}\\llmperf"`,
-          `py -m venv "${benchRoot}\\.venv-agentperf"`
+          `py -m venv "${benchRoot}\\.venv-agentperf"`,
+          `& "${benchRoot}\\.venv-agentperf\\Scripts\\pip.exe" install --upgrade pip aa-agentperf-local`
         ].join("\n")
       });
     }
 
-    // Card 3: Known Bug Fixes (Gutenberg Cache & AIPerf --ui simple)
+    if (isWin) {
+      cards.push({
+        id: "setup_cleanup",
+        title: `03 · Free VRAM & Stop Running llama-server (${profile.shortName})`,
+        badge: "VRAM SWEEP",
+        cmd: [
+          `Stop-Process -Name "llama-server" -Force -ErrorAction SilentlyContinue`,
+          profile.id === "amd_win_x64" ? `amd-smi` : `nvidia-smi`
+        ].join("\n")
+      });
+    } else {
+      cards.push({
+        id: "setup_cleanup",
+        title: "03 · Free VRAM & Stop Background AI Services (DGX Spark)",
+        badge: "VRAM SWEEP",
+        cmd: buildSshCommands(state).vramSweep
+      });
+    }
+
     cards.push({
       id: "setup_fixes",
-      title: "03 · Verified Fixes: Gutenberg ZeroDivisionError & AIPerf Zip Sweep UI",
-      badge: "HOTFIXES",
+      title: "04 · Clear llama-benchy Gutenberg Cache (ZeroDivisionError Fix)",
+      badge: "HOTFIX",
       cmd: isWin
-        ? [
-            `# Fix 1: Prevent llama-benchy Gutenberg ZeroDivisionError`,
-            `Remove-Item -Recurse -Force "$env:USERPROFILE\\.cache\\llama-benchy" -ErrorAction SilentlyContinue`,
-            ``,
-            `# Fix 2: Always pass --ui simple (or --ui none) with aiperf --sweep-type zip`,
-            `# Fix 3: Context overflow (65,536 + ~52 template + 1,024 OSL = 66,612) -> set -c 70000 -ctk q8_0 -ctv q8_0`
-          ].join("\n")
-        : [
-            `# Fix 1: Prevent llama-benchy Gutenberg ZeroDivisionError`,
-            `rm -rf ~/.cache/llama-benchy`,
-            ``,
-            `# Fix 2: Always pass --ui simple (or --ui none) with aiperf --sweep-type zip`,
-            `# Fix 3: Context overflow (65,536 + ~52 template + 1,024 OSL = 66,612) -> set -c 70000 -ctk q8_0 -ctv q8_0`
-          ].join("\n")
+        ? `Remove-Item -Recurse -Force "$env:USERPROFILE\\.cache\\llama-benchy" -ErrorAction SilentlyContinue`
+        : `rm -rf ~/.cache/llama-benchy`
     });
 
-    // Card 4: DGX Spark Central /models Symlink, Ollama & LM Studio Fixes
-    cards.push({
-      id: "setup_hermes_dgx",
-      title: "04 · DGX Spark Central /models Symlink, Ollama Override & LM Studio ENOENT Fix",
-      badge: "HERMES HOST",
-      cmd: [
-        `# 1. Link LM Studio models to central $HOME/models (avoids duplicate weights)`,
-        `mkdir -p "$HOME/models" "$HOME/.lmstudio/.internal/temp"`,
-        `chmod -R 755 "$HOME/.lmstudio/.internal"`,
-        `ln -sfn "$HOME/models" "$HOME/.lmstudio/models"`,
-        ``,
-        `# 2. Ollama systemd override (LAN bind + central models)`,
-        `sudo bash -c "cat << 'EOF' > /etc/systemd/system/ollama.service.d/override.conf`,
-        `[Service]`,
-        `User=$USER`,
-        `Group=$USER`,
-        `Environment=\\"OLLAMA_HOST=0.0.0.0:11434\\"`,
-        `Environment=\\"OLLAMA_MODELS=$HOME/models\\"`,
-        `EOF"`,
-        `sudo systemctl daemon-reload && sudo systemctl restart ollama`
-      ].join("\n")
-    });
+    if (profile.id === "dgx_spark_linux_arm64") {
+      cards.push({
+        id: "setup_hermes_dgx",
+        title: "05 · DGX Spark /models Symlink & Ollama Override",
+        badge: "DGX HOST",
+        cmd: [
+          `mkdir -p "$HOME/models" "$HOME/.lmstudio/.internal/temp"`,
+          `chmod -R 755 "$HOME/.lmstudio/.internal"`,
+          `ln -sfn "$HOME/models" "$HOME/.lmstudio/models"`,
+          ``,
+          `sudo bash -c "cat << 'EOF' > /etc/systemd/system/ollama.service.d/override.conf`,
+          `[Service]`,
+          `User=$USER`,
+          `Group=$USER`,
+          `Environment=\\"OLLAMA_HOST=0.0.0.0:11434\\"`,
+          `Environment=\\"OLLAMA_MODELS=$HOME/models\\"`,
+          `EOF"`,
+          `sudo systemctl daemon-reload && sudo systemctl restart ollama`
+        ].join("\n")
+      });
+    }
 
     return cards;
   }

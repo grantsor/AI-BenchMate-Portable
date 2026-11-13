@@ -1,5 +1,5 @@
 /* ==========================================================================
-   AI Benchmate — Portable Edition UI Renderer (3-Tab Clean Card Architecture)
+   AI Benchmate — Portable Edition UI Renderer (Setup -> Benchmarks -> Results)
    Synced 1:1 with src/App.jsx
    ========================================================================== */
 (function (global) {
@@ -161,6 +161,24 @@
       state.suites.aiperf_sweep.ctv = "q8_0";
     } else if (warningId === "ctx_benchy") {
       state.suites.llama_benchy.c = 70000;
+    } else if (warningId === "ctx_llmperf") {
+      const lp = state.suites.llmperf;
+      const req = (Number(lp.meanInput) || 1024) + 2 * (Number(lp.stddevInput) || 0) + (Number(lp.meanOutput) || 256) + 64;
+      lp.c = Math.max(32768, req + 1024);
+    } else if (warningId === "ctx_speed_bench") {
+      const sb = state.suites.speed_bench;
+      const req = 16384 + (Number(sb.osl) || 1024) + 64;
+      sb.c = Math.max(32768, req + 1024);
+      sb.contextPreset = [16384, 32768, 65536].includes(sb.c) ? String(sb.c) : "custom";
+    } else if (warningId === "ctx_aiperf_std") {
+      const astd = state.suites.aiperf_std;
+      const req = (Number(astd.islMean) || 1024) + (Number(astd.oslMean) || 256) + 64;
+      astd.c = Math.max(32768, req + 1024);
+    } else if (warningId === "sweep_cache_prompt") {
+      state.suites.aiperf_sweep.cachePrompt = false;
+    } else if (warningId === "vram_fp16_64k") {
+      state.suites.aiperf_sweep.ctk = "q8_0";
+      state.suites.aiperf_sweep.ctv = "q8_0";
     } else if (warningId === "vram_overflow") {
       const targetKv = state.suites.aiperf_sweep.ctk === "fp16" ? "q8_0" : "q4_0";
       Object.keys(state.suites).forEach((k) => {
@@ -172,10 +190,14 @@
     renderApp();
   }
 
-  /* ---------- Renderers ---------- */
+  /* ---------- Guardrails Always-Visible Status & Warnings ---------- */
   function renderGuardrailsHtml() {
-    const { warnings } = E.evaluateGuardrails(state);
-    if (!warnings.length) return "";
+    const { warnings, vramEstimate } = E.evaluateGuardrails(state);
+    if (!warnings.length) {
+      return `<div class="sb-banner sb-banner-ok">
+        <span><strong>Guardrails Active (All Parameters Valid)</strong> — Est. Peak VRAM: ${esc(vramEstimate.totalVramGb)} GB / ${esc(vramEstimate.vramCeiling)} GB (Weights ${esc(vramEstimate.weightGb)} GB + KV ${esc(vramEstimate.kvGb)} GB @ ${esc(vramEstimate.kvPrecision)} + 1.5 GB Buffer) · Max Server Context: ${esc(vramEstimate.maxServerCtx)}</span>
+      </div>`;
+    }
     return warnings
       .map(
         (w) =>
@@ -187,6 +209,99 @@
       .join("");
   }
 
+  /* ---------- Tab 1: 1. Setup & Pre-flight (Strictly Platform-Filtered) ---------- */
+  function renderSetupTab() {
+    const profile = D.HARDWARE_PROFILES[state.hardware.profileId];
+    const isDgx = profile.id === "dgx_spark_linux_arm64";
+    const cards = E.buildSetupCards(state);
+
+    let platformTogglesHtml = "";
+    if (profile.id === "rtx_spark_win_arm64") {
+      platformTogglesHtml = `<label class="sb-field-inline">
+        <input type="checkbox" data-hw-check="rtxArmTdigestCompile" ${state.hardware.rtxArmTdigestCompile ? "checked" : ""} />
+        <span>Compile aiperf[tdigest] (requires VS C++ ARM64 build tools)</span>
+      </label>`;
+    } else if (isDgx) {
+      platformTogglesHtml = `
+        <label class="sb-field-inline">
+          <input type="checkbox" data-hw-check="nonSudoSetup" ${state.hardware.nonSudoSetup ? "checked" : ""} />
+          <span>Non-sudo setup (skip python3-dev / crick C extension)</span>
+        </label>
+        <label class="sb-field-inline">
+          <input type="checkbox" data-ssh-check="includeVllmInStartAi" ${state.ssh.includeVllmInStartAi ? "checked" : ""} />
+          <span>Include vLLM in start-ai restore</span>
+        </label>`;
+    }
+
+    const cardsHtml = cards
+      .map(
+        (c) => `<div class="sb-terminal-wrap">
+          <div class="sb-terminal-bar">
+            <span>${esc(c.title)}</span>
+            <button type="button" class="btn btn-sm" data-copy-setup="${esc(c.id)}">Copy</button>
+          </div>
+          <pre class="sb-terminal-pre" data-setup-pre="${esc(c.id)}">${E.highlightShell(c.cmd)}</pre>
+        </div>`
+      )
+      .join("");
+
+    let dgxRemoteHtml = "";
+    if (isDgx) {
+      const s = state.ssh;
+      const sshCmds = E.buildSshCommands(state);
+      const sshCards = [
+        { id: "psTrigger", title: "Remote SSH Trigger (from Windows PowerShell to DGX Spark)", cmd: sshCmds.psTrigger },
+        { id: "tmuxLaunch", title: "tmux Split Benchmark Session (DGX Spark)", cmd: sshCmds.tmuxLaunch },
+        { id: "scpPull", title: "scp Pull Remote Results (from DGX Spark to PC)", cmd: sshCmds.scpPull },
+        { id: "startAiRestore", title: "Restore start-ai Stack (DGX Spark Post-Benchmark)", cmd: sshCmds.startAiRestore }
+      ];
+      dgxRemoteHtml = `
+        <div class="config-section" style="margin-top:20px; padding-top:16px; border-top:1px solid var(--border-soft);">
+          <h3 class="sb-sub-title" style="margin-top:0">DGX Spark Remote SSH &amp; Post-Benchmark Stack</h3>
+          <div class="sb-form-grid">
+            <div class="sb-field"><label>SSH User</label><input type="text" class="sb-input" data-ssh-field="user" value="${esc(s.user)}" /></div>
+            <div class="sb-field"><label>SSH Host / IP</label><input type="text" class="sb-input" data-ssh-field="host" value="${esc(s.host)}" /></div>
+            <div class="sb-field"><label>SSH Port</label><input type="number" class="sb-input" data-ssh-field="port" value="${esc(s.port)}" /></div>
+            <div class="sb-field"><label>tmux Session</label><input type="text" class="sb-input" data-ssh-field="tmuxSession" value="${esc(s.tmuxSession)}" /></div>
+            <div class="sb-field"><label>Remote Results Dir</label><input type="text" class="sb-input" data-ssh-field="remoteResultsDir" value="${esc(s.remoteResultsDir)}" /></div>
+            <div class="sb-field"><label>Local Pull Dir</label><input type="text" class="sb-input" data-ssh-field="localPullDir" value="${esc(s.localPullDir)}" /></div>
+            <div class="sb-field"><label>Hermes Server IP</label><input type="text" class="sb-input" data-ssh-field="hermesServerIp" value="${esc(s.hermesServerIp)}" /></div>
+          </div>
+          <div class="ssh-stack">${sshCards
+            .map(
+              (c) => `<div class="sb-terminal-wrap">
+                <div class="sb-terminal-bar">
+                  <span>${esc(c.title)}</span>
+                  <button type="button" class="btn btn-sm" data-copy-ssh="${esc(c.id)}">Copy</button>
+                </div>
+                <pre class="sb-terminal-pre" data-ssh-pre="${esc(c.id)}">${E.highlightShell(c.cmd)}</pre>
+              </div>`
+            )
+            .join("")}</div>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="config-section">
+        <div class="sb-inline-row" style="justify-content:space-between; margin-bottom:10px;">
+          <h2 class="sb-section-title" style="margin:0">Pre-flight Verification &amp; Environment Setup — ${esc(profile.shortName)}</h2>
+          <button type="button" class="btn btn-sm btn-primary" data-tab="benchmarks">Continue to Benchmarks &rarr;</button>
+        </div>
+        <div class="sb-form-grid">
+          <div class="sb-field"><label>Llama Bin Dir</label><input type="text" class="sb-input" data-hw-field="binDir" value="${esc(state.hardware.binDir)}" /></div>
+          <div class="sb-field"><label>Repo Dir</label><input type="text" class="sb-input" data-hw-field="repoDir" value="${esc(state.hardware.repoDir)}" /></div>
+          <div class="sb-field"><label>Bench Root (Venvs &amp; llmperf)</label><input type="text" class="sb-input" data-hw-field="benchRoot" value="${esc(state.hardware.benchRoot)}" /></div>
+          <div class="sb-field"><label>Active Model (.gguf)</label><input type="text" class="sb-input" data-model-field="fullPath" value="${esc(state.model.fullPath)}" /></div>
+        </div>
+        ${platformTogglesHtml ? `<div class="sb-inline-row" style="margin-top:10px;">${platformTogglesHtml}</div>` : ""}
+      </div>
+      <div class="ssh-stack" id="setup-cards-root">${cardsHtml}</div>
+      ${dgxRemoteHtml}
+    `;
+  }
+
+  /* ---------- Tab 2: 2. Benchmarks ---------- */
   function renderFieldInput(suiteId, field, label, type, val, attrs) {
     return `<div class="sb-field">
       <label>${esc(label)}</label>
@@ -224,7 +339,7 @@
     const faOpts = ["1", "on", "0", "off", "auto"];
 
     if (suiteId === "llama_bench") {
-      return (
+      return `<div class="sb-form-grid">${
         renderFieldInput(suiteId, "ngl", "-ngl", "number", s.ngl) +
         renderFieldSelect(suiteId, "fa", "-fa", s.fa, faOpts) +
         renderFieldInput(suiteId, "p", "-p (Prompt Sizes)", "text", s.p) +
@@ -233,10 +348,10 @@
         renderFieldInput(suiteId, "b", "-b (Batch)", "number", s.b) +
         renderFieldInput(suiteId, "ub", "-ub (uBatch)", "number", s.ub) +
         renderFieldSelect(suiteId, "format", "-o Format", s.format, ["md", "json", "csv"])
-      );
+      }</div>`;
     }
     if (suiteId === "llama_benchy") {
-      return (
+      return `<div class="sb-form-grid">${
         renderFieldInput(suiteId, "c", "Server -c", "number", s.c) +
         renderFieldInput(suiteId, "np", "Server -np", "number", s.np) +
         renderFieldSelect(suiteId, "ctk", "-ctk", s.ctk, kvOpts) +
@@ -246,29 +361,40 @@
         renderFieldInput(suiteId, "tg", "--tg", "text", s.tg) +
         renderFieldInput(suiteId, "depth", "--depth", "text", s.depth) +
         renderFieldInput(suiteId, "runs", "--runs", "number", s.runs)
-      );
+      }</div>`;
     }
     if (suiteId === "llmperf") {
-      return (
-        renderFieldInput(suiteId, "c", "Server -c", "number", s.c) +
-        renderFieldInput(suiteId, "np", "Server -np", "number", s.np) +
-        renderFieldSelect(suiteId, "ctk", "-ctk", s.ctk, kvOpts) +
-        renderFieldSelect(suiteId, "ctv", "-ctv", s.ctv, kvOpts) +
-        renderFieldInput(suiteId, "concurrency", "--num-concurrent-requests", "number", s.concurrency) +
-        renderFieldInput(suiteId, "maxCompleted", "--max-num-completed-requests", "number", s.maxCompleted) +
-        renderFieldInput(suiteId, "meanInput", "--mean-input-tokens", "number", s.meanInput) +
-        renderFieldInput(suiteId, "stddevInput", "--stddev-input-tokens", "number", s.stddevInput) +
-        renderFieldInput(suiteId, "meanOutput", "--mean-output-tokens", "number", s.meanOutput) +
-        renderFieldInput(suiteId, "stddevOutput", "--stddev-output-tokens", "number", s.stddevOutput)
-      );
+      const isDefault = Number(s.meanInput) === 1024 && Number(s.meanOutput) === 256;
+      const isFast = Number(s.meanInput) === 512 && Number(s.meanOutput) === 128;
+      return `
+        <div class="sb-inline-row" style="margin-bottom:10px">
+          <span style="font-size:12px;font-weight:600;color:var(--text-secondary)">Token Workload Preset:</span>
+          <button type="button" class="sb-chip ${isDefault ? "active" : ""}" data-llmperf-preset="default">Default: 1024 in / 256 out</button>
+          <button type="button" class="sb-chip ${isFast ? "active" : ""}" data-llmperf-preset="fast">Fast: 512 in / 128 out</button>
+        </div>
+        <div class="sb-form-grid">${
+          renderFieldInput(suiteId, "c", "Server -c", "number", s.c) +
+          renderFieldInput(suiteId, "np", "Server -np", "number", s.np) +
+          renderFieldSelect(suiteId, "ctk", "-ctk", s.ctk, kvOpts) +
+          renderFieldSelect(suiteId, "ctv", "-ctv", s.ctv, kvOpts) +
+          renderFieldInput(suiteId, "concurrency", "--num-concurrent-requests", "number", s.concurrency) +
+          renderFieldInput(suiteId, "maxCompleted", "--max-num-completed-requests", "number", s.maxCompleted) +
+          renderFieldInput(suiteId, "meanInput", "--mean-input-tokens", "number", s.meanInput) +
+          renderFieldInput(suiteId, "stddevInput", "--stddev-input-tokens", "number", s.stddevInput) +
+          renderFieldInput(suiteId, "meanOutput", "--mean-output-tokens", "number", s.meanOutput) +
+          renderFieldInput(suiteId, "stddevOutput", "--stddev-output-tokens", "number", s.stddevOutput)
+        }</div>`;
     }
     if (suiteId === "speed_bench") {
-      return (
-        renderFieldSelect(suiteId, "contextPreset", "Server Context (-c)", s.contextPreset || String(s.c), [
+      const presetVal = ["16384", "32768", "65536"].includes(String(s.c)) ? String(s.c) : "custom";
+      return `<div class="sb-form-grid">${
+        renderFieldSelect(suiteId, "contextPreset", "Context Quick Select", presetVal, [
           { value: "16384", label: "16K (16384)" },
           { value: "32768", label: "32K (32768)" },
-          { value: "65536", label: "64K (65536)" }
+          { value: "65536", label: "64K (65536)" },
+          { value: "custom", label: "Custom (-c below)" }
         ]) +
+        renderFieldInput(suiteId, "c", "Server -c", "number", s.c) +
         renderFieldInput(suiteId, "np", "Server -np", "number", s.np) +
         renderFieldSelect(suiteId, "ctk", "-ctk", s.ctk, kvOpts) +
         renderFieldSelect(suiteId, "ctv", "-ctv", s.ctv, kvOpts) +
@@ -280,20 +406,20 @@
         renderFieldInput(suiteId, "limit", "--limit", "number", s.limit) +
         renderFieldInput(suiteId, "compareBaselineFile", "Compare Baseline JSON", "text", s.compareBaselineFile) +
         renderFieldInput(suiteId, "compareSpeculativeFile", "Compare Speculative JSON", "text", s.compareSpeculativeFile)
-      );
+      }</div>`;
     }
     if (suiteId === "agentperf") {
-      return (
+      return `<div class="sb-form-grid">${
         renderFieldInput(suiteId, "c", "Server -c", "number", s.c) +
         renderFieldInput(suiteId, "np", "Server -np", "number", s.np) +
         renderFieldSelect(suiteId, "ctk", "-ctk", s.ctk, kvOpts) +
         renderFieldSelect(suiteId, "ctv", "-ctv", s.ctv, kvOpts) +
         renderFieldSelect(suiteId, "fa", "-fa", s.fa, faOpts) +
         renderFieldInput(suiteId, "extraFlags", "Extra Client Flags", "text", s.extraFlags || "")
-      );
+      }</div>`;
     }
     if (suiteId === "aiperf_std") {
-      return (
+      return `<div class="sb-form-grid">${
         renderFieldInput(suiteId, "c", "Server -c", "number", s.c) +
         renderFieldInput(suiteId, "np", "Server -np", "number", s.np) +
         renderFieldSelect(suiteId, "ctk", "-ctk", s.ctk, kvOpts) +
@@ -304,10 +430,10 @@
         renderFieldInput(suiteId, "islMean", "--synthetic-input-tokens-mean", "number", s.islMean) +
         renderFieldInput(suiteId, "oslMean", "--output-tokens-mean", "number", s.oslMean) +
         renderFieldCheck(suiteId, "ignoreEos", "ignore_eos:true", s.ignoreEos)
-      );
+      }</div>`;
     }
     if (suiteId === "aiperf_sweep") {
-      return (
+      return `<div class="sb-form-grid">${
         renderFieldInput(suiteId, "c", "Server -c", "number", s.c) +
         renderFieldInput(suiteId, "np", "Server -np", "number", s.np) +
         renderFieldSelect(suiteId, "ctk", "-ctk", s.ctk, kvOpts) +
@@ -321,7 +447,7 @@
         renderFieldInput(suiteId, "randomSeed", "--random-seed", "number", s.randomSeed) +
         renderFieldCheck(suiteId, "ignoreEos", "ignore_eos:true", s.ignoreEos) +
         renderFieldCheck(suiteId, "cachePrompt", "cache_prompt", s.cachePrompt)
-      );
+      }</div>`;
     }
     return "";
   }
@@ -378,7 +504,7 @@
         <input type="text" class="sb-input" id="preset-name-input" placeholder="Save current parameters as preset..." style="min-width:220px" />
         <button type="button" class="btn btn-sm btn-outline" data-action="save-preset">+ Save Preset</button>
         ${presetsHtml}
-        <button type="button" class="btn btn-sm btn-danger" data-action="reset-all-suites">Reset Parity Defaults</button>
+        <button type="button" class="btn btn-sm btn-danger" data-action="reset-all-suites">Reset to Defaults</button>
       </div>
     </div>`;
   }
@@ -392,13 +518,17 @@
       )
       .join("");
 
-    const amdBackendSelect =
+    const amdControls =
       profile.id === "amd_win_x64"
         ? `<label class="sb-field-inline">Backend
              <select class="sb-select" data-action="change-amd-backend">
                <option value="vulkan" ${state.hardware.amdBackend === "vulkan" ? "selected" : ""}>Vulkan</option>
                <option value="rocm" ${state.hardware.amdBackend === "rocm" ? "selected" : ""}>ROCm HIP</option>
              </select>
+           </label>
+           <label class="sb-field-inline">
+             <input type="checkbox" data-hw-check="amdEnableFa" ${state.hardware.amdEnableFa ? "checked" : ""} />
+             <span>Enable -fa 1 on Vulkan</span>
            </label>`
         : "";
 
@@ -429,25 +559,21 @@
         : `<span class="sb-badge sb-badge-warn" data-suite-mod="${esc(meta.id)}" style="display:none">Modified</span>`;
 
       const resetBtn = modified
-        ? `<button type="button" class="btn btn-sm btn-danger" data-reset-suite="${esc(meta.id)}">Reset</button>`
-        : "";
-
-      const copyServerBtn = meta.hasServer
-        ? `<button type="button" class="btn btn-sm btn-outline" data-copy-server="${esc(meta.id)}">Copy Server</button>`
+        ? `<button type="button" class="btn btn-sm btn-danger" data-reset-suite="${esc(meta.id)}">Reset to Default</button>`
         : "";
 
       const serverBox = meta.hasServer
         ? `<div class="sb-terminal-wrap">
              <div class="sb-terminal-bar">
                <span>Terminal 1 — Server</span>
-               <button type="button" class="btn btn-sm" data-copy-server="${esc(meta.id)}">Copy</button>
+               <button type="button" class="btn btn-sm" data-copy-server="${esc(meta.id)}">Copy Server</button>
              </div>
              <pre class="sb-terminal-pre" data-server-pre="${esc(meta.id)}">${E.highlightShell(serverCmd)}</pre>
            </div>`
         : "";
 
       const drawerHtml = expanded
-        ? `<div class="sb-drawer"><div class="sb-form-grid">${renderSuiteDrawerFields(meta.id)}</div></div>`
+        ? `<div class="sb-drawer">${renderSuiteDrawerFields(meta.id)}</div>`
         : "";
 
       return `<div class="suite-card" data-suite-card="${esc(meta.id)}">
@@ -461,8 +587,6 @@
           <div class="suite-card-actions">
             <button type="button" class="btn btn-sm" data-toggle-drawer="${esc(meta.id)}">Parameters ${expanded ? "&#9652;" : "&#9662;"}</button>
             ${resetBtn}
-            ${copyServerBtn}
-            <button type="button" class="btn btn-sm btn-primary" data-copy-client="${esc(meta.id)}">Copy Command</button>
           </div>
         </div>
         ${drawerHtml}
@@ -471,7 +595,7 @@
           <div class="sb-terminal-wrap">
             <div class="sb-terminal-bar">
               <span>${meta.hasServer ? "Terminal 2 — Client" : "Command"}</span>
-              <button type="button" class="btn btn-sm" data-copy-client="${esc(meta.id)}">Copy</button>
+              <button type="button" class="btn btn-sm btn-primary" data-copy-client="${esc(meta.id)}">Copy Command</button>
             </div>
             <pre class="sb-terminal-pre" data-client-pre="${esc(meta.id)}">${E.highlightShell(clientCmd)}</pre>
           </div>
@@ -480,6 +604,7 @@
     }).join("");
 
     const playbookExt = profile.shell === "powershell" ? ".ps1" : ".sh";
+    const missingOnly = Boolean(state.ui.playbookMissingOnly);
 
     return `
       <div class="config-section">
@@ -487,7 +612,7 @@
           <label class="sb-field-inline">Platform
             <select class="sb-select" data-action="change-profile">${profileOpts}</select>
           </label>
-          ${amdBackendSelect}
+          ${amdControls}
           <label class="sb-field-inline">VRAM (GB)
             <input type="number" class="sb-input" style="width:76px" data-hw-field="vramGb" value="${esc(state.hardware.vramGb)}" />
           </label>
@@ -507,18 +632,70 @@
         ${renderPathsDrawer()}
       </div>
 
-      <div id="guardrails-root">${renderGuardrailsHtml()}</div>
+      <div class="sb-banner" style="margin-top:0; margin-bottom:10px; background:var(--bg-subtle); border:1px solid var(--border); color:var(--text-secondary);">
+        <span><strong>00 · Pre-flight Check</strong> — Verify GPU, binaries, <code>.gguf</code> model, Python &amp; venvs before benchmarking.</span>
+        <div class="sb-inline-row" style="gap:6px">
+          <button type="button" class="btn btn-sm btn-outline" data-copy-setup="setup_verify">Copy Pre-flight Script</button>
+          <button type="button" class="btn btn-sm" data-tab="setup">Open 1. Setup &amp; Pre-flight</button>
+        </div>
+      </div>
+
+      <div class="guardrails-wrap" id="guardrails-root">${renderGuardrailsHtml()}</div>
 
       <div class="suite-list">${suiteCardsHtml}</div>
 
       <div class="playbook-footer">
-        <span class="playbook-footer-title">Full Playbook (${esc(profile.shortName)} · ${esc(state.model.alias || state.model.slug)})</span>
+        <span class="playbook-footer-title">Playbook (${esc(profile.shortName)} · ${esc(state.model.alias || state.model.slug)})</span>
         <div class="playbook-footer-actions">
+          <button type="button" class="btn btn-sm ${missingOnly ? "btn-primary" : ""}" data-action="toggle-playbook-missing">
+            ${missingOnly ? "Missing / Incomplete Runs Only: ON" : "Missing / Incomplete Runs Only"}
+          </button>
           <button type="button" class="btn btn-sm btn-outline" data-action="copy-playbook">Copy Playbook</button>
           <button type="button" class="btn btn-sm btn-primary" data-action="download-playbook">Download ${esc(playbookExt)}</button>
         </div>
       </div>
     `;
+  }
+
+  /* ---------- Tab 3: 3. Results & Audit (No Sample Data, Clean Columns) ---------- */
+  function formatRecordCells(r) {
+    const m = r.metrics || {};
+    if (r.suiteType === "llama_bench") {
+      return {
+        headline: `tg128: ${m.tg128 || 0} t/s · pp512: ${m.pp512 || 0} t/s`,
+        details: `pp2048: ${m.pp2048 || 0} t/s · tg512: ${m.tg512 || 0} t/s`
+      };
+    }
+    if (r.suiteType === "llama_benchy") {
+      return {
+        headline: `depth 0: ${m.depth0Tg || 0} t/s · depth 4096: ${m.depth4096Tg || 0} t/s`,
+        details: `KV degradation: ${m.degradationPct || 0}%`
+      };
+    }
+    if (r.suiteType === "llmperf") {
+      return {
+        headline: `${m.totalTps || 0} t/s · ${m.reqPerMin || 0} req/min`,
+        details: `TTFT: ${m.ttftMs || 0} ms · ITL: ${m.itlMs || 0} ms`
+      };
+    }
+    if (r.suiteType === "speed_bench") {
+      return {
+        headline: `Overall: ${m.overall || 0} t/s`,
+        details: `Code ${m.coding || 0} · Reason ${m.reasoning || 0} · Write ${m.writing || 0} · Math ${m.math || 0} t/s`
+      };
+    }
+    if (r.suiteType === "aiperf_sweep" || r.suiteType === "aiperf_std") {
+      return {
+        headline: `16k: ${m.tps16k || 0} · 32k: ${m.tps32k || 0} · 64k: ${m.tps64k || 0} t/s`,
+        details: `TTFT 16k/32k/64k: ${m.ttft16k || 0} / ${m.ttft32k || 0} / ${m.ttft64k || 0} ms`
+      };
+    }
+    return {
+      headline: Object.entries(m)
+        .map(([k, v]) => `${k}: ${v}`)
+        .join(" · "),
+      details: "—"
+    };
   }
 
   function renderSvgBars(title, rows, unit) {
@@ -562,36 +739,33 @@
               ? "sb-badge-danger"
               : "";
       const statusLabel = item ? item.label : "NOT AUDITED";
-      const detail = item ? item.detail : `Expected: ${target.leaf}`;
+      const subText = item ? item.detail : "Run folder audit or drop files above.";
       return `<tr>
-        <td><strong>${esc(meta.index)} ${esc(meta.title)}</strong></td>
+        <td><strong>${esc(meta.index)} · ${esc(meta.title)}</strong></td>
         <td><code>${esc(target.leaf)}</code></td>
-        <td><span class="sb-badge ${badgeClass}">${esc(statusLabel)}</span></td>
-        <td>${esc(detail)}</td>
+        <td>
+          <span class="sb-badge ${badgeClass}">${esc(statusLabel)}</span>
+          <div class="sb-audit-sub">${esc(subText)}</div>
+        </td>
       </tr>`;
     }).join("");
 
-    const activeRecords = [
-      ...(state.results.includeSampleData ? D.SAMPLE_RESULTS_DATASET : []),
-      ...(state.results.loadedRecords || [])
-    ];
-
+    const activeRecords = state.results.loadedRecords || [];
     const recordRows = activeRecords.length
       ? activeRecords
           .map((r) => {
-            const mStr = Object.entries(r.metrics || {})
-              .map(([k, v]) => `${k}: ${v}`)
-              .join(" · ");
+            const cells = formatRecordCells(r);
             return `<tr>
               <td><code>${esc(r.suiteType)}</code></td>
               <td>${esc(r.gpuLabel)}</td>
               <td>${esc(r.modelLabel)}</td>
-              <td><code>${esc(mStr)}</code></td>
-              <td>${esc(r.sourceFile)}</td>
+              <td><strong>${esc(cells.headline)}</strong></td>
+              <td>${esc(cells.details)}</td>
+              <td><code>${esc(r.sourceFile)}</code></td>
             </tr>`;
           })
           .join("")
-      : `<tr><td colspan="5" style="text-align:center;color:var(--text-muted)">Load .md/.json output files or toggle the DGX vs R9700 sample dataset.</td></tr>`;
+      : `<tr><td colspan="6" style="text-align:center;color:var(--text-muted)">Upload benchmark result files (.md / .json) or drop your Results folder above to populate the comparison table.</td></tr>`;
 
     let chartsHtml = "";
     if (state.ui.showCharts && activeRecords.length) {
@@ -615,7 +789,15 @@
       </div>`;
     }
 
-    const deepAuditCmd = E.buildDeepAuditScript(state);
+    const deepAuditBox = state.ui.showDeepAuditScript
+      ? `<div class="sb-terminal-wrap">
+           <div class="sb-terminal-bar">
+             <span>Terminal Audit Script (1 KB Stub Check)</span>
+             <button type="button" class="btn btn-sm" data-action="copy-deep-audit">Copy</button>
+           </div>
+           <pre class="sb-terminal-pre" id="deep-audit-pre">${E.highlightShell(E.buildDeepAuditScript(state))}</pre>
+         </div>`
+      : "";
 
     return `
       <div class="config-section">
@@ -629,34 +811,28 @@
             Select Files
             <input type="file" id="audit-files-input" multiple accept=".md,.json,.log" style="display:none" />
           </label>
+          <button type="button" class="btn btn-sm" data-action="toggle-deep-audit">
+            Terminal Audit Script ${state.ui.showDeepAuditScript ? "&#9652;" : "&#9662;"}
+          </button>
           ${state.audit.lastFolderName ? `<span class="sb-badge">${esc(state.audit.lastFolderName)}</span>` : ""}
           ${Object.keys(state.audit.items || {}).length ? `<button type="button" class="btn btn-sm btn-danger" data-action="clear-audit">Clear Audit</button>` : ""}
         </div>
 
         <div class="sb-dropzone" id="audit-dropzone">Drop a benchmark results folder or .md / .json / .log files here</div>
 
+        ${deepAuditBox}
+
         <div class="sb-table-wrap">
           <table class="sb-table">
-            <thead><tr><th>Suite</th><th>Target Output</th><th>Status</th><th>Audit Detail</th></tr></thead>
+            <thead><tr><th>Benchmark</th><th>Expected Output</th><th>Status</th></tr></thead>
             <tbody>${auditRows}</tbody>
           </table>
-        </div>
-
-        <div class="sb-terminal-wrap">
-          <div class="sb-terminal-bar">
-            <span>Deep Audit Script (1 KB Stub Verification)</span>
-            <button type="button" class="btn btn-sm" data-action="copy-deep-audit">Copy</button>
-          </div>
-          <pre class="sb-terminal-pre" id="deep-audit-pre">${E.highlightShell(deepAuditCmd)}</pre>
         </div>
       </div>
 
       <div>
         <div class="sb-inline-row">
-          <h2 class="sb-section-title" style="margin:0">Comparison Matrix</h2>
-          <button type="button" class="btn btn-sm ${state.results.includeSampleData ? "btn-primary" : "btn-outline"}" data-action="toggle-sample-data">
-            ${state.results.includeSampleData ? "Hide Sample (DGX vs R9700)" : "Load Sample (DGX vs R9700)"}
-          </button>
+          <h2 class="sb-section-title" style="margin:0">Parsed Results Comparison</h2>
           <label class="btn btn-sm btn-outline" style="cursor:pointer">
             Upload .md / .json
             <input type="file" id="compare-files-input" multiple accept=".md,.json" style="display:none" />
@@ -664,14 +840,14 @@
           <button type="button" class="btn btn-sm" data-action="toggle-charts">${state.ui.showCharts ? "Hide Charts" : "Show Charts"}</button>
           <button type="button" class="btn btn-sm" data-action="export-md">Export .md</button>
           <button type="button" class="btn btn-sm" data-action="export-csv">Export .csv</button>
-          ${(state.results.loadedRecords || []).length ? `<button type="button" class="btn btn-sm btn-danger" data-action="clear-loaded-records">Clear Uploaded</button>` : ""}
+          ${activeRecords.length ? `<button type="button" class="btn btn-sm btn-danger" data-action="clear-loaded-records">Clear Uploaded</button>` : ""}
         </div>
 
         ${chartsHtml}
 
         <div class="sb-table-wrap">
           <table class="sb-table">
-            <thead><tr><th>Suite</th><th>GPU / Backend</th><th>Model</th><th>Metrics</th><th>Source</th></tr></thead>
+            <thead><tr><th>Benchmark</th><th>Platform</th><th>Model</th><th>Headline Throughput</th><th>Latency / Details</th><th>File</th></tr></thead>
             <tbody>${recordRows}</tbody>
           </table>
         </div>
@@ -679,62 +855,53 @@
     `;
   }
 
-  function renderSshCardsHtml() {
-    const sshCmds = E.buildSshCommands(state);
-    const setupCards = E.buildSetupCards(state).filter((c) => {
-      const isWin = D.HARDWARE_PROFILES[state.hardware.profileId].os === "windows";
-      return isWin || c.id !== "setup_cleanup";
-    });
-
-    const cards = [
-      { id: "psTrigger", title: "Windows PowerShell SSH Trigger", cmd: sshCmds.psTrigger },
-      { id: "tmuxLaunch", title: "tmux Split Session", cmd: sshCmds.tmuxLaunch },
-      { id: "scpPull", title: "scp Pull Remote Results", cmd: sshCmds.scpPull },
-      { id: "vramSweep", title: "DGX Pre-Benchmark VRAM Sweep", cmd: sshCmds.vramSweep },
-      { id: "startAiRestore", title: "Restore start-ai Stack (DGX)", cmd: sshCmds.startAiRestore },
-      ...setupCards.map((c) => ({ id: c.id, title: c.title, cmd: c.cmd }))
-    ];
-
-    return cards
+  /* ---------- Interactive Header Pills & Live Updates ---------- */
+  function renderHeaderPillsHtml() {
+    const profileOpts = Object.values(D.HARDWARE_PROFILES)
       .map(
-        (c) =>
-          `<div class="sb-terminal-wrap">
-            <div class="sb-terminal-bar">
-              <span>${esc(c.title)}</span>
-              <button type="button" class="btn btn-sm" data-copy-ssh="${esc(c.id)}">Copy</button>
-            </div>
-            <pre class="sb-terminal-pre" data-ssh-pre="${esc(c.id)}">${E.highlightShell(c.cmd)}</pre>
-          </div>`
+        (p) =>
+          `<option value="${esc(p.id)}" ${p.id === state.hardware.profileId ? "selected" : ""}>${esc(p.shortName)}</option>`
       )
       .join("");
-  }
 
-  function renderSshTab() {
-    const s = state.ssh;
+    const baseVram = [16, 24, 32, 48, 64, 96, 128];
+    const curVram = Number(state.hardware.vramGb) || 32;
+    const vramList = baseVram.includes(curVram) ? baseVram : [...baseVram, curVram].sort((a, b) => a - b);
+    const vramOpts = vramList
+      .map((gb) => `<option value="${gb}" ${gb === curVram ? "selected" : ""}>${gb} GB</option>`)
+      .join("");
+
+    const choices = allModelChoices();
+    const matched = choices.find((m) => m.slug === state.model.slug || m.alias === state.model.alias);
+    const modelOpts = [
+      !matched
+        ? `<option value="__current__" selected>${esc(state.model.alias || state.model.slug || "Custom")}</option>`
+        : "",
+      ...choices.map((m) => {
+        const isSel = matched && m.id === matched.id;
+        return `<option value="${esc(m.id)}" ${isSel ? "selected" : ""}>${esc(m.label || m.alias)}</option>`;
+      })
+    ].join("");
+
     return `
-      <div class="config-section">
-        <div class="sb-form-grid">
-          <div class="sb-field"><label>SSH User</label><input type="text" class="sb-input" data-ssh-field="user" value="${esc(s.user)}" /></div>
-          <div class="sb-field"><label>SSH Host / IP</label><input type="text" class="sb-input" data-ssh-field="host" value="${esc(s.host)}" /></div>
-          <div class="sb-field"><label>SSH Port</label><input type="number" class="sb-input" data-ssh-field="port" value="${esc(s.port)}" /></div>
-          <div class="sb-field"><label>tmux Session</label><input type="text" class="sb-input" data-ssh-field="tmuxSession" value="${esc(s.tmuxSession)}" /></div>
-          <div class="sb-field"><label>Remote Results Dir</label><input type="text" class="sb-input" data-ssh-field="remoteResultsDir" value="${esc(s.remoteResultsDir)}" /></div>
-          <div class="sb-field"><label>Local Pull Dir</label><input type="text" class="sb-input" data-ssh-field="localPullDir" value="${esc(s.localPullDir)}" /></div>
-          <div class="sb-field"><label>Hermes Server IP</label><input type="text" class="sb-input" data-ssh-field="hermesServerIp" value="${esc(s.hermesServerIp)}" /></div>
-        </div>
-      </div>
-      <div class="ssh-stack" id="ssh-cards-root">${renderSshCardsHtml()}</div>
+      <span class="sb-pill sb-pill-interactive">
+        <span>platform:</span>
+        <select class="sb-pill-select" id="pill-platform-select" data-action="change-profile" aria-label="Platform">${profileOpts}</select>
+      </span>
+      <span class="sb-pill sb-pill-interactive">
+        <span>vram:</span>
+        <select class="sb-pill-select" id="pill-vram-select" data-action="change-vram-pill" aria-label="VRAM">${vramOpts}</select>
+      </span>
+      <span class="sb-pill sb-pill-interactive">
+        <span>model:</span>
+        <select class="sb-pill-select" id="pill-model-select" data-action="change-model-pill" aria-label="Model">${modelOpts}</select>
+      </span>
     `;
   }
 
   function refreshLiveDom() {
-    const profile = D.HARDWARE_PROFILES[state.hardware.profileId];
-    const pillPlat = document.getElementById("pill-platform");
-    const pillVram = document.getElementById("pill-vram");
-    const pillModel = document.getElementById("pill-model");
-    if (pillPlat) pillPlat.innerHTML = `platform: <strong>${esc(profile.shortName)}</strong>`;
-    if (pillVram) pillVram.innerHTML = `vram: <strong>${esc(state.hardware.vramGb)} GB</strong>`;
-    if (pillModel) pillModel.innerHTML = `model: <strong>${esc(state.model.alias || state.model.slug)}</strong>`;
+    const pillsEl = document.getElementById("header-pills-cluster");
+    if (pillsEl) pillsEl.innerHTML = renderHeaderPillsHtml();
 
     if (state.ui.activeTab === "benchmarks") {
       const guardRoot = document.getElementById("guardrails-root");
@@ -753,9 +920,19 @@
         const cPre = document.querySelector(`[data-client-pre="${meta.id}"]`);
         if (cPre) cPre.innerHTML = E.highlightShell(E.buildSuiteClientCommand(state, meta.id));
       });
-    } else if (state.ui.activeTab === "ssh") {
-      const sshRoot = document.getElementById("ssh-cards-root");
-      if (sshRoot) sshRoot.innerHTML = renderSshCardsHtml();
+    } else if (state.ui.activeTab === "setup") {
+      E.buildSetupCards(state).forEach((c) => {
+        const pre = document.querySelector(`[data-setup-pre="${c.id}"]`);
+        if (pre) pre.innerHTML = E.highlightShell(c.cmd);
+      });
+      const profile = D.HARDWARE_PROFILES[state.hardware.profileId];
+      if (profile.id === "dgx_spark_linux_arm64") {
+        const sshCmds = E.buildSshCommands(state);
+        ["psTrigger", "tmuxLaunch", "scpPull", "startAiRestore"].forEach((k) => {
+          const pre = document.querySelector(`[data-ssh-pre="${k}"]`);
+          if (pre && sshCmds[k]) pre.innerHTML = E.highlightShell(sshCmds[k]);
+        });
+      }
     } else if (state.ui.activeTab === "results") {
       const deepPre = document.getElementById("deep-audit-pre");
       if (deepPre) deepPre.innerHTML = E.highlightShell(E.buildDeepAuditScript(state));
@@ -767,13 +944,12 @@
     const root = document.getElementById("app");
     if (!root) return;
 
-    const profile = D.HARDWARE_PROFILES[state.hardware.profileId];
-    const tab = state.ui.activeTab || "benchmarks";
+    const tab = state.ui.activeTab || "setup";
 
     let bodyHtml = "";
-    if (tab === "benchmarks") bodyHtml = renderBenchmarksTab();
-    else if (tab === "results") bodyHtml = renderResultsTab();
-    else bodyHtml = renderSshTab();
+    if (tab === "setup") bodyHtml = renderSetupTab();
+    else if (tab === "benchmarks") bodyHtml = renderBenchmarksTab();
+    else bodyHtml = renderResultsTab();
 
     root.innerHTML = `
       <div class="sb-container">
@@ -781,9 +957,7 @@
           <div class="sb-brand-cluster">
             <span class="sb-brand">ai-benchmate</span>
             <span class="sb-version">1.0.0</span>
-            <span class="sb-pill" id="pill-platform">platform: <strong>${esc(profile.shortName)}</strong></span>
-            <span class="sb-pill" id="pill-vram">vram: <strong>${esc(state.hardware.vramGb)} GB</strong></span>
-            <span class="sb-pill" id="pill-model">model: <strong>${esc(state.model.alias || state.model.slug)}</strong></span>
+            <span class="sb-pill-row" id="header-pills-cluster">${renderHeaderPillsHtml()}</span>
           </div>
           <div class="sb-header-controls">
             <button type="button" class="sb-ctrl-btn ${state.ui.pauseAnimations ? "is-active" : ""}" data-action="toggle-stealth">
@@ -798,9 +972,9 @@
         </header>
 
         <nav class="folder-tabs" aria-label="Primary Tabs">
-          <button type="button" class="folder-tab ${tab === "benchmarks" ? "active" : ""}" data-tab="benchmarks">Benchmarks</button>
-          <button type="button" class="folder-tab ${tab === "results" ? "active" : ""}" data-tab="results">Results &amp; Audit</button>
-          <button type="button" class="folder-tab ${tab === "ssh" ? "active" : ""}" data-tab="ssh">SSH &amp; Setup</button>
+          <button type="button" class="folder-tab ${tab === "setup" ? "active" : ""}" data-tab="setup">1. Setup &amp; Pre-flight</button>
+          <button type="button" class="folder-tab ${tab === "benchmarks" ? "active" : ""}" data-tab="benchmarks">2. Benchmarks</button>
+          <button type="button" class="folder-tab ${tab === "results" ? "active" : ""}" data-tab="results">3. Results &amp; Audit</button>
         </nav>
 
         <main class="sb-card">${bodyHtml}</main>
@@ -808,7 +982,7 @@
     `;
   }
 
-  /* ---------- Event Delegation ---------- */
+  /* ---------- File Audit & Drag-and-Drop ---------- */
   async function handleAuditEntries(entries, folderLabel) {
     if (!entries.length) return;
     state.audit.items = await E.auditFileList(entries, state);
@@ -876,6 +1050,7 @@
     });
   }
 
+  /* ---------- Global Delegated Event Listeners ---------- */
   document.addEventListener("click", (ev) => {
     const t = ev.target.closest("button");
     if (!t) return;
@@ -958,20 +1133,37 @@
     }
     if (t.dataset.deletePreset) {
       state.customPresets = (state.customPresets || []).filter((p) => p.name !== t.dataset.deletePreset);
-      if (state.naming.activePresetName === t.dataset.deletePreset) state.naming.activePresetName = "Baseline Parity Defaults";
+      if (state.naming.activePresetName === t.dataset.deletePreset) state.naming.activePresetName = "Default Settings";
       persistState();
       renderApp();
       return;
     }
     if (t.dataset.action === "reset-all-suites") {
       state.suites = JSON.parse(JSON.stringify(D.PARITY_DEFAULTS));
-      state.naming.activePresetName = "Baseline Parity Defaults";
+      state.naming.activePresetName = "Default Settings";
       persistState();
       renderApp();
       return;
     }
     if (t.dataset.autofix) {
       applyAutoFix(t.dataset.autofix);
+      return;
+    }
+    if (t.dataset.llmperfPreset) {
+      const lp = state.suites.llmperf;
+      if (t.dataset.llmperfPreset === "fast") {
+        lp.meanInput = 512;
+        lp.stddevInput = 64;
+        lp.meanOutput = 128;
+        lp.stddevOutput = 16;
+      } else {
+        lp.meanInput = 1024;
+        lp.stddevInput = 128;
+        lp.meanOutput = 256;
+        lp.stddevOutput = 32;
+      }
+      persistState();
+      renderApp();
       return;
     }
     if (t.dataset.toggleDrawer) {
@@ -996,14 +1188,31 @@
       copyText(E.buildSuiteClientCommand(state, t.dataset.copyClient), t);
       return;
     }
+    if (t.dataset.copySetup) {
+      const match = E.buildSetupCards(state).find((c) => c.id === t.dataset.copySetup);
+      if (match) copyText(match.cmd, t);
+      return;
+    }
+    if (t.dataset.action === "toggle-playbook-missing") {
+      state.ui.playbookMissingOnly = !state.ui.playbookMissingOnly;
+      persistState();
+      renderApp();
+      return;
+    }
     if (t.dataset.action === "copy-playbook") {
-      copyText(E.buildAllInOnePlaybook(state, false), t);
+      copyText(E.buildAllInOnePlaybook(state, Boolean(state.ui.playbookMissingOnly)), t);
       return;
     }
     if (t.dataset.action === "download-playbook") {
       const profile = D.HARDWARE_PROFILES[state.hardware.profileId];
       const ext = profile.shell === "powershell" ? "ps1" : "sh";
-      downloadText(`benchmate_${state.model.slug || "run"}.${ext}`, E.buildAllInOnePlaybook(state, false));
+      downloadText(`benchmate_${state.model.slug || "run"}.${ext}`, E.buildAllInOnePlaybook(state, Boolean(state.ui.playbookMissingOnly)));
+      return;
+    }
+    if (t.dataset.action === "toggle-deep-audit") {
+      state.ui.showDeepAuditScript = !state.ui.showDeepAuditScript;
+      persistState();
+      renderApp();
       return;
     }
     if (t.dataset.action === "clear-audit") {
@@ -1016,12 +1225,6 @@
       copyText(E.buildDeepAuditScript(state), t);
       return;
     }
-    if (t.dataset.action === "toggle-sample-data") {
-      state.results.includeSampleData = !state.results.includeSampleData;
-      persistState();
-      renderApp();
-      return;
-    }
     if (t.dataset.action === "toggle-charts") {
       state.ui.showCharts = !state.ui.showCharts;
       persistState();
@@ -1029,13 +1232,11 @@
       return;
     }
     if (t.dataset.action === "export-md") {
-      const recs = [...(state.results.includeSampleData ? D.SAMPLE_RESULTS_DATASET : []), ...(state.results.loadedRecords || [])];
-      downloadText("ai_benchmate_comparison.md", E.exportComparisonMarkdown(recs));
+      downloadText("ai_benchmate_comparison.md", E.exportComparisonMarkdown(state.results.loadedRecords || []));
       return;
     }
     if (t.dataset.action === "export-csv") {
-      const recs = [...(state.results.includeSampleData ? D.SAMPLE_RESULTS_DATASET : []), ...(state.results.loadedRecords || [])];
-      downloadText("ai_benchmate_comparison.csv", E.exportComparisonCsv(recs));
+      downloadText("ai_benchmate_comparison.csv", E.exportComparisonCsv(state.results.loadedRecords || []));
       return;
     }
     if (t.dataset.action === "clear-loaded-records") {
@@ -1045,10 +1246,8 @@
       return;
     }
     if (t.dataset.copySsh) {
-      const key = t.dataset.copySsh;
       const sshCmds = E.buildSshCommands(state);
-      const setupMatch = E.buildSetupCards(state).find((c) => c.id === key);
-      const cmd = sshCmds[key] || (setupMatch ? setupMatch.cmd : "");
+      const cmd = sshCmds[t.dataset.copySsh];
       if (cmd) copyText(cmd, t);
     }
   });
@@ -1067,9 +1266,36 @@
       renderApp();
       return;
     }
+    if (t.dataset.action === "change-vram-pill") {
+      state.hardware.vramGb = Number(t.value) || 32;
+      persistState();
+      renderApp();
+      return;
+    }
+    if (t.dataset.action === "change-model-pill") {
+      const m = allModelChoices().find((item) => item.id === t.value);
+      if (m) {
+        applyQuickModel(m);
+        persistState();
+        renderApp();
+      }
+      return;
+    }
     if (t.dataset.action === "change-amd-backend") {
       state.hardware.amdBackend = t.value;
       state.hardware.binDir = t.value === "rocm" ? "C:\\llama.cpp\\rocm" : "C:\\llama.cpp\\vulkan";
+      persistState();
+      renderApp();
+      return;
+    }
+    if (t.dataset.hwCheck) {
+      state.hardware[t.dataset.hwCheck] = t.checked;
+      persistState();
+      renderApp();
+      return;
+    }
+    if (t.dataset.sshCheck) {
+      state.ssh[t.dataset.sshCheck] = t.checked;
       persistState();
       renderApp();
       return;
@@ -1095,8 +1321,10 @@
         renderApp();
       } else if (t.tagName === "SELECT") {
         state.suites[sid][fld] = t.value;
-        if (sid === "speed_bench" && fld === "contextPreset") {
+        if (sid === "speed_bench" && fld === "contextPreset" && t.value !== "custom") {
           state.suites.speed_bench.c = Number(t.value) || 32768;
+          const cInput = document.querySelector(`[data-suite-id="speed_bench"][data-suite-field="c"]`);
+          if (cInput) cInput.value = state.suites.speed_bench.c;
         }
         persistState();
         refreshLiveDom();
@@ -1148,6 +1376,12 @@
       const sid = t.dataset.suiteId;
       const fld = t.dataset.suiteField;
       state.suites[sid][fld] = t.type === "number" ? Number(t.value) || 0 : t.value;
+      if (sid === "speed_bench" && fld === "c") {
+        const strC = String(state.suites.speed_bench.c);
+        state.suites.speed_bench.contextPreset = ["16384", "32768", "65536"].includes(strC) ? strC : "custom";
+        const sel = document.querySelector(`[data-suite-id="speed_bench"][data-suite-field="contextPreset"]`);
+        if (sel) sel.value = state.suites.speed_bench.contextPreset;
+      }
       persistState();
       refreshLiveDom();
       return;

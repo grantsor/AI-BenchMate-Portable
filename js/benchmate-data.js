@@ -434,8 +434,10 @@
         theme: "light", // light | dark | system
         lightTerminal: false,
         pauseAnimations: false, // Option 2A unified toggle (motion + stealth GPU blur removal)
-        activeTab: "benchmarks", // benchmarks | results | ssh
+        activeTab: "setup", // setup | benchmarks | results
         showPathsAndNaming: false,
+        showDeepAuditScript: false,
+        playbookMissingOnly: false,
         showMissingOnly: false,
         selectedRunSuites: ["aiperf_std", "aiperf_sweep", "speed_bench"],
         runNote: "",
@@ -483,7 +485,7 @@
       },
       naming: {
         mode: "auto", // auto | stamped | classic
-        activePresetName: "Baseline Parity Defaults"
+        activePresetName: "Default Settings"
       },
       suites: JSON.parse(JSON.stringify(PARITY_DEFAULTS)),
       completedSteps: {},
