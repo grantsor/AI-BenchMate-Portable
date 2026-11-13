@@ -30,8 +30,12 @@
     try {
       const raw = global.localStorage.getItem(STORAGE_KEY);
       if (!raw) return fallback;
-      const parsed = JSON.parse(raw);
-      return deepMerge(fallback, parsed);
+      const merged = deepMerge(fallback, JSON.parse(raw));
+      const legacyTabMap = { builder: "run", coverage: "results", ssh: "remote", setup: "remote" };
+      if (legacyTabMap[merged.ui.activeTab]) {
+        merged.ui.activeTab = legacyTabMap[merged.ui.activeTab];
+      }
+      return merged;
     } catch (_) {
       return fallback;
     }
@@ -1311,6 +1315,143 @@
       .join("\n");
   }
 
+  const FIT_CONTEXT_TIERS = [
+    { ctx: 262144, label: "256K" },
+    { ctx: 131072, label: "128K" },
+    { ctx: 65536, label: "64K" },
+    { ctx: 32768, label: "32K" },
+    { ctx: 16384, label: "16K" },
+    { ctx: 8192, label: "8K" },
+    { ctx: 4096, label: "4K" }
+  ];
+
+  function computeModelFitRows(state) {
+    const { QUICK_MODELS } = global.BenchmateData;
+    const vramGb = Number(state.hardware.vramGb) || 64;
+    const budgetGib = Math.round(vramGb * 0.9 * 10) / 10;
+    const kvPrecision = (state.ui && state.ui.fitKv) || "fp16";
+    const kvFactor = kvPrecision === "q4_0" ? 0.28 : kvPrecision === "q8_0" ? 0.53 : 1.0;
+
+    const allModels = QUICK_MODELS.slice();
+    (state.customModels || []).forEach((cm, idx) => {
+      if (!allModels.some((m) => m.alias === cm.alias)) {
+        allModels.push({
+          id: "custom_" + idx,
+          label: cm.alias || cm.slug || "Custom Model " + (idx + 1),
+          quant: "Custom",
+          kind: "dense",
+          alias: cm.alias,
+          slug: cm.slug,
+          tokenizer: cm.tokenizer,
+          weightGb: Number(cm.weightGb) || 15.8,
+          paramsB: Number(cm.paramsB) || 27,
+          archType: "dense",
+          isCustom: true,
+          customModel: cm
+        });
+      }
+    });
+
+    return allModels.map((m) => {
+      const kind = m.kind || m.archType || "dense";
+      const quant = m.quant || "Q4_K_M";
+      const paramsB = Number(m.paramsB) || 27;
+      const weightGb = Number(m.weightGb) || 15.8;
+      const computeOverhead = 1.1;
+
+      const kvRatePer1k = kind.indexOf("hybrid") !== -1
+        ? 0.06 * Math.max(0.25, paramsB / 27)
+        : kind === "moe"
+          ? 0.10 * Math.max(0.25, paramsB / 30)
+          : 0.15 * Math.max(0.2, paramsB / 27);
+
+      let chosenTier = null;
+      let chosenTotal = 0;
+
+      for (let i = 0; i < FIT_CONTEXT_TIERS.length; i++) {
+        const tier = FIT_CONTEXT_TIERS[i];
+        const kvGb = (tier.ctx / 1024) * kvRatePer1k * kvFactor;
+        const total = weightGb + kvGb + computeOverhead;
+        if (total <= budgetGib) {
+          chosenTier = tier;
+          chosenTotal = total;
+          break;
+        }
+      }
+
+      if (!chosenTier) {
+        const minTier = FIT_CONTEXT_TIERS[FIT_CONTEXT_TIERS.length - 1];
+        const kvGb = (minTier.ctx / 1024) * kvRatePer1k * kvFactor;
+        chosenTotal = weightGb + kvGb + computeOverhead;
+        return {
+          id: m.id,
+          modelLabel: m.label,
+          quant,
+          kind,
+          bestCtxLabel: "4K (Over)",
+          totalGib: Number(chosenTotal.toFixed(2)),
+          budgetGib,
+          headroomGib: Number((budgetGib - chosenTotal).toFixed(2)),
+          fits: false,
+          rawModel: m
+        };
+      }
+
+      return {
+        id: m.id,
+        modelLabel: m.label,
+        quant,
+        kind,
+        bestCtxLabel: chosenTier.label,
+        totalGib: Number(chosenTotal.toFixed(2)),
+        budgetGib,
+        headroomGib: Number((budgetGib - chosenTotal).toFixed(2)),
+        fits: true,
+        rawModel: m
+      };
+    });
+  }
+
+  function buildSelectedSuitesPreview(state) {
+    const { HARDWARE_PROFILES, SUITE_METADATA } = global.BenchmateData;
+    const mode = (state.ui && state.ui.previewMode) || "selected";
+    const profile = HARDWARE_PROFILES[state.hardware.profileId];
+    const noteLine = state.ui && state.ui.runNote ? "# Run Note: " + state.ui.runNote + "\n" : "";
+
+    if (mode === "prereqs") {
+      const cards = buildSetupCards(state);
+      return (
+        noteLine +
+        "# Prerequisites & Environment Verification — " + profile.name + "\n\n" +
+        cards.slice(0, 3).map((c) => "### " + c.title + "\n" + c.cmd).join("\n\n")
+      );
+    }
+
+    if (mode === "outstanding") {
+      return noteLine + buildAllInOnePlaybook(state, true);
+    }
+
+    const selectedArr = Array.isArray(state.ui && state.ui.selectedRunSuites)
+      ? state.ui.selectedRunSuites
+      : [];
+
+    if (!selectedArr.length) {
+      return "# Pick one or more suites above and click Preview commands (or click Run / Copy everything outstanding).";
+    }
+
+    const chunks = SUITE_METADATA.filter((m) => selectedArr.indexOf(m.id) !== -1).map((meta) => {
+      const srv = buildServerCommand(state, meta.id);
+      const cli = buildSuiteClientCommand(state, meta.id);
+      return ["# === [" + meta.index + "] " + meta.title + " ===", srv ? srv + "\n" : "", cli].filter(Boolean).join("\n");
+    });
+
+    return (
+      noteLine +
+      "# Target: " + profile.name + " | Model: " + state.model.alias + " (" + state.naming.mode.toUpperCase() + " naming)\n\n" +
+      chunks.join("\n\n")
+    );
+  }
+
   global.BenchmateEngine = {
     STORAGE_KEY,
     loadState,
@@ -1335,6 +1476,8 @@
     exportComparisonCsv,
     buildSshCommands,
     buildSetupCards,
-    highlightShell
+    highlightShell,
+    computeModelFitRows,
+    buildSelectedSuitesPreview
   };
 })(window);
