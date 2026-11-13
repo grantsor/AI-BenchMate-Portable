@@ -1748,17 +1748,27 @@
 
   async function init() {
     applyThemeAndMotion();
-    const savedAudit = await Engine.loadSnapshotIDB("latest_audit");
-    if (savedAudit && savedAudit.items && Object.keys(state.audit.items || {}).length === 0) {
-      state.audit = savedAudit;
-    }
-    const savedResults = await Engine.loadSnapshotIDB("latest_results");
-    if (Array.isArray(savedResults) && savedResults.length && (!state.results.loadedRecords || !state.results.loadedRecords.length)) {
-      state.results.loadedRecords = savedResults;
-    }
     renderApp();
+    try {
+      const savedAudit = await Engine.loadSnapshotIDB("latest_audit");
+      let updated = false;
+      if (savedAudit && savedAudit.items && Object.keys(state.audit.items || {}).length === 0) {
+        state.audit = savedAudit;
+        updated = true;
+      }
+      const savedResults = await Engine.loadSnapshotIDB("latest_results");
+      if (Array.isArray(savedResults) && savedResults.length && (!state.results.loadedRecords || !state.results.loadedRecords.length)) {
+        state.results.loadedRecords = savedResults;
+        updated = true;
+      }
+      if (updated) renderApp();
+    } catch (_) {}
   }
 
-  global.BenchmateUI = { init };
-  document.addEventListener("DOMContentLoaded", init);
+  global.BenchmateUI = { init, renderApp };
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
 })(window);
