@@ -31,7 +31,16 @@
       const raw = global.localStorage.getItem(STORAGE_KEY);
       if (!raw) return fallback;
       const merged = deepMerge(fallback, JSON.parse(raw));
-      const legacyTabMap = { builder: "run", coverage: "results", ssh: "remote", setup: "remote" };
+      const legacyTabMap = {
+        builder: "benchmarks",
+        run: "benchmarks",
+        models: "benchmarks",
+        system: "benchmarks",
+        coverage: "results",
+        ssh: "ssh",
+        setup: "ssh",
+        remote: "ssh"
+      };
       if (legacyTabMap[merged.ui.activeTab]) {
         merged.ui.activeTab = legacyTabMap[merged.ui.activeTab];
       }

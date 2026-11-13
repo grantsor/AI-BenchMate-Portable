@@ -95,8 +95,8 @@
   const QUICK_MODELS = [
     {
       id: "qwen38_27b",
-      label: "Qwen3.8-27B (Dense)",
-      tag: "Parity Dense",
+      label: "Qwen3.8-27B",
+      tag: "Dense 27B",
       quant: "UD-Q4_K_M",
       kind: "hybrid",
       relativeWin: "unsloth\\Qwen3.8-27B-GGUF\\Qwen3.8-27B-UD-Q4_K_M.gguf",
@@ -110,8 +110,8 @@
     },
     {
       id: "qwen36_35b_moe",
-      label: "Qwen3.6-35B-A3B (MoE)",
-      tag: "Parity MoE",
+      label: "Qwen3.6-35B-A3B",
+      tag: "MoE 35B-A3B",
       quant: "UD-Q4_K_M",
       kind: "moe+hybrid",
       relativeWin: "unsloth\\Qwen3.6-35B-A3B-GGUF\\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
@@ -122,111 +122,6 @@
       weightGb: 21.0,
       paramsB: 35,
       archType: "moe"
-    },
-    {
-      id: "nemotron_30b",
-      label: "Nemotron-3-Nano-30B-A3B",
-      tag: "Hermes Reasoning",
-      quant: "Q4_K_M",
-      kind: "moe",
-      relativeWin: "nemotron-3-nano-omni-30b-a3b-reasoning-gguf\\Nemotron-3-Nano-Omni-30B-A3B-Reasoning-Q4_K_M.gguf",
-      relativeLinux: "nemotron-3-nano-omni-30b-a3b-reasoning-gguf/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-Q4_K_M.gguf",
-      alias: "Nemotron-3-Nano-30B-A3B",
-      slug: "nemotron30b",
-      tokenizer: "nvidia/Nemotron-3-Nano-Omni-30B-A3B",
-      weightGb: 18.0,
-      paramsB: 30,
-      archType: "moe"
-    },
-    {
-      id: "gemma4_31b",
-      label: "Gemma-4-31B-it-QAT",
-      tag: "Hermes Analyst",
-      quant: "Q4_0",
-      kind: "dense",
-      relativeWin: "gemma-4-31B-it-QAT-GGU\\gemma-4-31B-it-QAT-Q4_0.gguf",
-      relativeLinux: "gemma-4-31B-it-QAT-GGU/gemma-4-31B-it-QAT-Q4_0.gguf",
-      alias: "gemma-4-31b-qat",
-      slug: "gemma4_31b",
-      tokenizer: "google/gemma-4-31b-it",
-      weightGb: 17.5,
-      paramsB: 31,
-      archType: "dense"
-    },
-    {
-      id: "hermes3_8b",
-      label: "Hermes-3-Llama-3.1-8B (Q8_0)",
-      tag: "Hermes Fast",
-      quant: "Q8_0",
-      kind: "dense",
-      relativeWin: "Hermes-3-Llama-3.1-8B-GGUF\\Hermes-3-Llama-3.1-8B-Q8_0.gguf",
-      relativeLinux: "Hermes-3-Llama-3.1-8B-Q8_0.gguf",
-      alias: "Hermes-3-Llama-3.1-8B",
-      slug: "hermes3_8b",
-      tokenizer: "NousResearch/Hermes-3-Llama-3.1-8B",
-      weightGb: 8.5,
-      paramsB: 8,
-      archType: "dense"
-    },
-    {
-      id: "nemotron_120b_nvfp4",
-      label: "Nemotron-3-Super-120B (vLLM NVFP4)",
-      tag: "DGX Orchestrator",
-      quant: "NVFP4",
-      kind: "moe",
-      relativeWin: "nvidia\\NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
-      relativeLinux: "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
-      alias: "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
-      slug: "nemotron120b",
-      tokenizer: "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
-      weightGb: 68.0,
-      paramsB: 120,
-      archType: "moe"
-    },
-    {
-      id: "llama33_70b",
-      label: "Llama 3.3 70B Instruct",
-      tag: "Large Dense",
-      quant: "Q4_K_M",
-      kind: "dense",
-      relativeWin: "meta-llama\\Llama-3.3-70B-Instruct-GGUF\\Llama-3.3-70B-Instruct-Q4_K_M.gguf",
-      relativeLinux: "Llama-3.3-70B-Instruct-Q4_K_M.gguf",
-      alias: "Llama-3.3-70B-Instruct",
-      slug: "llama33_70b",
-      tokenizer: "meta-llama/Llama-3.3-70B-Instruct",
-      weightGb: 42.5,
-      paramsB: 70,
-      archType: "dense"
-    },
-    {
-      id: "qwen3_32b",
-      label: "Qwen3 32B",
-      tag: "Dense 32B",
-      quant: "Q4_K_M",
-      kind: "dense",
-      relativeWin: "Qwen\\Qwen3-32B-GGUF\\Qwen3-32B-Q4_K_M.gguf",
-      relativeLinux: "Qwen3-32B-Q4_K_M.gguf",
-      alias: "Qwen3-32B",
-      slug: "qwen3_32b",
-      tokenizer: "Qwen/Qwen3-32B",
-      weightGb: 19.8,
-      paramsB: 32,
-      archType: "dense"
-    },
-    {
-      id: "qwen3_4b",
-      label: "Qwen3 4B",
-      tag: "Lightweight",
-      quant: "Q4_K_M",
-      kind: "dense",
-      relativeWin: "Qwen\\Qwen3-4B-GGUF\\Qwen3-4B-Q4_K_M.gguf",
-      relativeLinux: "Qwen3-4B-Q4_K_M.gguf",
-      alias: "Qwen3-4B",
-      slug: "qwen3_4b",
-      tokenizer: "Qwen/Qwen3-4B",
-      weightGb: 2.8,
-      paramsB: 4,
-      archType: "dense"
     }
   ];
 
@@ -539,8 +434,8 @@
         theme: "light", // light | dark | system
         lightTerminal: false,
         pauseAnimations: false, // Option 2A unified toggle (motion + stealth GPU blur removal)
-        activeTab: "run", // system | models | run | results | remote
-        activeSection: "sec-hardware",
+        activeTab: "benchmarks", // benchmarks | results | ssh
+        showPathsAndNaming: false,
         showMissingOnly: false,
         selectedRunSuites: ["aiperf_std", "aiperf_sweep", "speed_bench"],
         runNote: "",

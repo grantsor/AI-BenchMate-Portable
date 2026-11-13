@@ -1,70 +1,94 @@
 /* ==========================================================================
-   AI Benchmate — Clean sparkbench-Inspired Portable UI (Vanilla JS)
-   100% Universal Persistence (localStorage + IndexedDB)
-   Works identically via file:// double-click AND HTTP local server
+   AI Benchmate — Portable Edition UI Renderer (3-Tab Clean Card Architecture)
+   Synced 1:1 with src/App.jsx
    ========================================================================== */
 (function (global) {
   "use strict";
 
-  const Data = global.BenchmateData;
-  const Engine = global.BenchmateEngine;
+  const D = global.BenchmateData;
+  const E = global.BenchmateEngine;
+  if (!D || !E) return;
 
-  let state = Engine.loadState();
-
-  function persist() {
-    Engine.saveState(state);
-  }
-
-  function applyThemeAndMotion() {
-    const html = document.documentElement;
-    let resolved = state.ui.theme || "light";
-    if (resolved === "system") {
-      resolved = global.matchMedia && global.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-    }
-    html.setAttribute("data-theme", resolved);
-    html.setAttribute("data-light-terminal", state.ui.lightTerminal ? "true" : "false");
-    html.classList.toggle("pause-animations", Boolean(state.ui.pauseAnimations));
-  }
+  let state = E.loadState();
 
   function esc(str) {
-    return String(str || "")
+    return String(str == null ? "" : str)
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;");
   }
 
-  function copyText(btn, text, origLabel) {
-    const done = () => {
-      if (!btn) return;
-      btn.classList.add("copied");
-      btn.textContent = "Copied!";
-      setTimeout(() => {
-        btn.classList.remove("copied");
-        btn.textContent = origLabel || "Copy";
-      }, 1400);
-    };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
-    } else {
-      fallbackCopy(text, done);
+  function persistState() {
+    E.saveState(state);
+    try {
+      E.saveSnapshotIDB("latest_state", state);
+    } catch {
+      /* ignore */
     }
   }
 
-  function fallbackCopy(text, cb) {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.style.position = "fixed";
-    ta.style.opacity = "0";
-    document.body.appendChild(ta);
-    ta.select();
-    try { document.execCommand("copy"); } catch (_) {}
-    document.body.removeChild(ta);
-    if (cb) cb();
+  function applyThemeAndStealth() {
+    let resolved = state.ui.theme || "light";
+    if (resolved === "system") {
+      try {
+        resolved =
+          global.matchMedia && global.matchMedia("(prefers-color-scheme: dark)").matches
+            ? "dark"
+            : "light";
+      } catch {
+        resolved = "light";
+      }
+    }
+    if (document.documentElement) {
+      document.documentElement.setAttribute("data-theme", resolved);
+    }
+    if (document.body) {
+      document.body.classList.toggle("pause-animations", Boolean(state.ui.pauseAnimations));
+    }
   }
 
-  function downloadFile(filename, content, mime) {
-    const blob = new Blob([content], { type: mime || "text/plain;charset=utf-8" });
+  function flashCopied(btn) {
+    if (!btn) return;
+    const prev = btn.textContent;
+    btn.classList.add("copied");
+    btn.textContent = "Copied";
+    setTimeout(() => {
+      btn.classList.remove("copied");
+      btn.textContent = prev;
+    }, 1300);
+  }
+
+  function copyText(text, btn) {
+    const val = String(text || "");
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard
+        .writeText(val)
+        .then(() => flashCopied(btn))
+        .catch(() => fallbackCopy(val, btn));
+      return;
+    }
+    fallbackCopy(val, btn);
+  }
+
+  function fallbackCopy(val, btn) {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = val;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      flashCopied(btn);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function downloadText(filename, content) {
+    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -72,888 +96,1036 @@
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 500);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  // Preserves focus when typing inside text inputs
-  function refreshLiveDom() {
-    const preRun = document.getElementById("run-terminal-pre");
-    if (preRun) {
-      preRun.innerHTML = Engine.highlightShell(Engine.buildSelectedSuitesPreview(state));
-    }
-    const barRun = document.getElementById("run-terminal-meta");
-    if (barRun) {
-      const prof = Data.HARDWARE_PROFILES[state.hardware.profileId];
-      barRun.textContent = `${state.ui.previewMode || "selected"} · ${prof.shell} · ${state.model.alias}`;
-    }
-    const preRem = document.getElementById("remote-terminal-pre");
-    if (preRem) {
-      preRem.innerHTML = Engine.highlightShell(getActiveRemoteCode());
-    }
-    const grHost = document.getElementById("run-guardrails-host");
-    if (grHost) {
-      grHost.innerHTML = renderGuardrailsHtml();
-      bindGuardrailButtons(grHost);
-    }
-    const pillRow = document.getElementById("header-pills-host");
-    if (pillRow) {
-      pillRow.innerHTML = renderHeaderPillsInner();
-    }
+  function allModelChoices() {
+    return [...D.QUICK_MODELS, ...(state.customModels || [])];
   }
 
-  function selectQuickModel(qm) {
-    const profile = Data.HARDWARE_PROFILES[state.hardware.profileId];
-    const sep = profile.os === "windows" ? "\\" : "/";
-    const rel = profile.os === "windows" ? qm.relativeWin : qm.relativeLinux;
-    state.model.fullPath = Engine.joinPath(profile.defaultModelsDir, rel, sep);
-    state.model.baseDir = profile.defaultModelsDir;
-    state.model.filename = rel;
-    state.model.alias = qm.alias;
-    state.model.slug = qm.slug;
-    state.model.tokenizer = qm.tokenizer;
-    state.model.weightGb = qm.weightGb;
-    state.model.paramsB = qm.paramsB;
-    persist();
-    renderApp();
-  }
+  function applyQuickModel(modelObj) {
+    const profile = D.HARDWARE_PROFILES[state.hardware.profileId];
+    const isWin = profile.os === "windows";
+    const sep = isWin ? "\\" : "/";
+    const baseDir = state.model.baseDir || profile.defaultModelsDir;
+    const rel = isWin
+      ? modelObj.relativeWin || modelObj.filename || modelObj.relativeLinux
+      : modelObj.relativeLinux || modelObj.filename || modelObj.relativeWin;
+    const cleanRel = String(rel || "").replace(/^[\\/]+/, "");
+    const cleanBase = String(baseDir || profile.defaultModelsDir).replace(/[\\/]+$/, "");
+    const fullPath = modelObj.fullPath
+      ? modelObj.fullPath
+      : cleanBase + sep + cleanRel;
 
-  function selectModelById(modelId) {
-    const quick = Data.QUICK_MODELS.find((m) => m.id === modelId);
-    if (quick) {
-      selectQuickModel(quick);
-      return;
-    }
-    if (modelId.startsWith("custom_")) {
-      const idx = parseInt(modelId.replace("custom_", ""), 10);
-      const cm = (state.customModels || [])[idx];
-      if (cm) {
-        state.model = { ...state.model, ...cm };
-        persist();
-        renderApp();
-      }
-    }
+    state.model.fullPath = fullPath;
+    state.model.baseDir = cleanBase;
+    state.model.filename = cleanRel.split(/[\\/]/).pop() || cleanRel;
+    state.model.alias = modelObj.alias;
+    state.model.slug = modelObj.slug;
+    state.model.tokenizer = modelObj.tokenizer;
+    state.model.weightGb = Number(modelObj.weightGb) || 15.8;
+    state.model.paramsB = Number(modelObj.paramsB) || 27;
   }
 
   function switchHardwareProfile(newProfileId) {
-    const prevProfile = Data.HARDWARE_PROFILES[state.hardware.profileId];
-    const nextProfile = Data.HARDWARE_PROFILES[newProfileId];
+    const prevProfile = D.HARDWARE_PROFILES[state.hardware.profileId];
+    const nextProfile = D.HARDWARE_PROFILES[newProfileId];
     if (!nextProfile) return;
 
-    state.hardware.profileId = nextProfile.id;
+    state.hardware.profileId = newProfileId;
     state.hardware.vramGb = nextProfile.defaultVramGb;
     state.hardware.binDir = nextProfile.defaultBinDir;
     state.hardware.repoDir = nextProfile.defaultRepoDir;
     state.hardware.benchRoot = nextProfile.defaultBenchRoot;
     state.hardware.resultsDir = nextProfile.defaultResultsDir;
-    if (nextProfile.deviceFlag) state.hardware.nvidiaDevice = nextProfile.deviceFlag;
+    state.hardware.nvidiaDevice = nextProfile.deviceFlag || "CUDA0";
 
     const sep = nextProfile.os === "windows" ? "\\" : "/";
-    const matchQuick = Data.QUICK_MODELS.find((m) => m.alias === state.model.alias);
-    if (matchQuick) {
-      const rel = nextProfile.os === "windows" ? matchQuick.relativeWin : matchQuick.relativeLinux;
-      state.model.fullPath = Engine.joinPath(nextProfile.defaultModelsDir, rel, sep);
+    const matchedQuick = allModelChoices().find(
+      (m) => m.slug === state.model.slug || m.alias === state.model.alias
+    );
+    state.model.baseDir = nextProfile.defaultModelsDir;
+    if (matchedQuick && matchedQuick.relativeWin && matchedQuick.relativeLinux) {
+      applyQuickModel(matchedQuick);
     } else if (prevProfile.os !== nextProfile.os) {
-      const filenameOnly = (state.model.filename || "model.gguf").split(/[\\/]+/).pop();
-      state.model.fullPath = Engine.joinPath(nextProfile.defaultModelsDir, filenameOnly, sep);
+      const fileOnly = String(state.model.fullPath || state.model.filename || "").split(/[\\/]/).pop();
+      state.model.fullPath = nextProfile.defaultModelsDir + sep + fileOnly;
+      state.model.filename = fileOnly;
     }
-    const parsed = Engine.parseModelPath(state.model.fullPath);
-    state.model.baseDir = parsed.baseDir;
-    state.model.filename = parsed.filename;
-    persist();
+  }
+
+  function applyAutoFix(warningId) {
+    if (warningId === "ctx_aiperf_sweep") {
+      state.suites.aiperf_sweep.c = 70000;
+      state.suites.aiperf_sweep.ctk = "q8_0";
+      state.suites.aiperf_sweep.ctv = "q8_0";
+    } else if (warningId === "ctx_benchy") {
+      state.suites.llama_benchy.c = 70000;
+    } else if (warningId === "vram_overflow") {
+      const targetKv = state.suites.aiperf_sweep.ctk === "fp16" ? "q8_0" : "q4_0";
+      Object.keys(state.suites).forEach((k) => {
+        if ("ctk" in state.suites[k]) state.suites[k].ctk = targetKv;
+        if ("ctv" in state.suites[k]) state.suites[k].ctv = targetKv;
+      });
+    }
+    persistState();
     renderApp();
   }
 
-  function renderHeaderPillsInner() {
-    const profile = Data.HARDWARE_PROFILES[state.hardware.profileId];
-    const vramGb = Number(state.hardware.vramGb) || profile.defaultVramGb;
-    const budget = (vramGb * 0.9).toFixed(1);
-    const poolType = profile.os === "linux" ? "unified" : "discrete";
-    return `
-      <span class="sb-pill">platform: <strong>${esc(profile.id)}</strong></span>
-      <span class="sb-pill">memory: <strong>${poolType} ${vramGb} GiB</strong></span>
-      <span class="sb-pill">binding: <strong>system_usable ${budget} GiB</strong></span>
-      <span class="sb-pill sb-pill-quiet">localhost only · publishes nothing</span>
-    `;
-  }
-
-  function renderHeader() {
-    return `
-      <header class="sb-header">
-        <div class="sb-brand-cluster">
-          <span class="sb-brand">ai-benchmate</span>
-          <span class="sb-version">1.0.0</span>
-          <div class="sb-inline-row" id="header-pills-host" style="gap:6px;">
-            ${renderHeaderPillsInner()}
-          </div>
-        </div>
-        <div class="sb-header-controls">
-          <button type="button" class="sb-ctrl-btn ${state.ui.pauseAnimations ? "is-active" : ""}" id="btn-stealth-mode" title="Pause Animations & Benchmark Stealth Mode">
-            ${state.ui.pauseAnimations ? "Stealth: ON" : "Pause Animations"}
-          </button>
-          <select class="sb-ctrl-select" id="select-theme" aria-label="Theme">
-            <option value="light" ${state.ui.theme === "light" ? "selected" : ""}>Light</option>
-            <option value="dark" ${state.ui.theme === "dark" ? "selected" : ""}>Dark</option>
-            <option value="system" ${state.ui.theme === "system" ? "selected" : ""}>System</option>
-          </select>
-        </div>
-      </header>
-    `;
-  }
-
-  function renderTabs() {
-    const tabs = [
-      { id: "system", label: "System" },
-      { id: "models", label: "Models" },
-      { id: "run", label: "Run" },
-      { id: "results", label: "Results" },
-      { id: "remote", label: "Remote & Setup" }
-    ];
-    return `
-      <nav class="folder-tabs" aria-label="Primary Tabs">
-        ${tabs.map((t) => `
-          <button type="button" class="folder-tab ${state.ui.activeTab === t.id ? "active" : ""}" data-tab="${t.id}">
-            ${esc(t.label)}
-          </button>
-        `).join("")}
-      </nav>
-    `;
-  }
-
-  // ---------- TAB 1: SYSTEM ----------
-  function renderSystemTab() {
-    const hw = state.hardware;
-    const profile = Data.HARDWARE_PROFILES[hw.profileId];
-    return `
-      <h2 class="sb-section-title">System & Platform Configuration</h2>
-      <div class="sb-form-grid">
-        <div class="sb-field">
-          <label>Target Compute Profile</label>
-          <select class="sb-select" id="sys-profile-sel">
-            ${Object.values(Data.HARDWARE_PROFILES).map((p) => `
-              <option value="${p.id}" ${hw.profileId === p.id ? "selected" : ""}>${esc(p.name)} (${p.shell})</option>
-            `).join("")}
-          </select>
-        </div>
-
-        <div class="sb-field">
-          <label>VRAM Capacity (GiB)</label>
-          <input type="number" class="sb-input mono" id="sys-vram" value="${esc(hw.vramGb)}" min="4" max="512" />
-        </div>
-
-        ${hw.profileId === "amd_win_x64" ? `
-          <div class="sb-field">
-            <label>AMD Compute Backend</label>
-            <select class="sb-select" id="sys-amd-backend">
-              <option value="vulkan" ${hw.amdBackend === "vulkan" ? "selected" : ""}>Vulkan0 (Default)</option>
-              <option value="rocm" ${hw.amdBackend === "rocm" ? "selected" : ""}>ROCm / HIP0</option>
-            </select>
-          </div>` : ""}
-
-        ${profile.supportsMultiGpu ? `
-          <div class="sb-field">
-            <label>CUDA Device (--device)</label>
-            <input type="text" class="sb-input mono" id="sys-nvidia-dev" value="${esc(hw.nvidiaDevice)}" />
-          </div>
-          <div class="sb-field">
-            <label>Multi-GPU Tensor Split (Optional)</label>
-            <input type="text" class="sb-input mono" id="sys-tensor-split" value="${esc(hw.tensorSplit)}" placeholder="0.5,0.5" />
-          </div>` : ""}
-
-        <div class="sb-field">
-          <label>Server Host & Port</label>
-          <div class="sb-inline-row" style="gap:6px; flex-wrap:nowrap;">
-            <input type="text" class="sb-input mono" id="sys-host" value="${esc(hw.host)}" style="flex:1; min-width:90px;" />
-            <input type="number" class="sb-input mono" id="sys-port" value="${esc(hw.port)}" style="width:82px;" />
-          </div>
-        </div>
-
-        <div class="sb-field">
-          <label>Dynamic Result Naming</label>
-          <select class="sb-select" id="sys-naming-mode">
-            <option value="auto" ${state.naming.mode === "auto" ? "selected" : ""}>Auto (Stamp on Customize)</option>
-            <option value="stamped" ${state.naming.mode === "stamped" ? "selected" : ""}>Mode A · Parameter-Stamped</option>
-            <option value="classic" ${state.naming.mode === "classic" ? "selected" : ""}>Mode B · Classic Parity</option>
-          </select>
-        </div>
-
-        <div class="sb-field">
-          <label>Client --model Argument</label>
-          <select class="sb-select" id="sys-client-model-mode">
-            <option value="alias" ${state.model.clientModelMode === "alias" ? "selected" : ""}>Served Alias (--alias)</option>
-            <option value="fullpath" ${state.model.clientModelMode === "fullpath" ? "selected" : ""}>Full GGUF File Path</option>
-          </select>
-        </div>
-      </div>
-
-      <h3 class="sb-sub-title">Directory Paths</h3>
-      <div class="sb-form-grid">
-        <div class="sb-field"><label>llama.cpp Binaries</label><input type="text" class="sb-input mono" id="sys-bin-dir" value="${esc(hw.binDir)}" /></div>
-        <div class="sb-field"><label>Centralized Results</label><input type="text" class="sb-input mono" id="sys-results-dir" value="${esc(hw.resultsDir)}" /></div>
-        <div class="sb-field"><label>Benchmarks Root (Venvs)</label><input type="text" class="sb-input mono" id="sys-bench-root" value="${esc(hw.benchRoot)}" /></div>
-        <div class="sb-field"><label>llama.cpp Repo Root</label><input type="text" class="sb-input mono" id="sys-repo-dir" value="${esc(hw.repoDir)}" /></div>
-      </div>
-
-      <div class="sb-inline-row" style="margin-top:16px; justify-content:space-between;">
-        <div class="sb-inline-row">
-          ${hw.profileId === "dgx_spark_linux_arm64" ? `<label class="suite-check-label"><input type="checkbox" id="sys-non-sudo" ${hw.nonSudoSetup ? "checked" : ""} /> Non-sudo setup (skip apt python3-dev)</label>` : ""}
-          ${hw.profileId === "rtx_spark_win_arm64" ? `<label class="suite-check-label"><input type="checkbox" id="sys-rtx-tdigest" ${hw.rtxArmTdigestCompile ? "checked" : ""} /> Compile aiperf[tdigest] C extension</label>` : ""}
-          ${hw.profileId === "amd_win_x64" && hw.amdBackend === "vulkan" ? `<label class="suite-check-label"><input type="checkbox" id="sys-amd-fa" ${hw.amdEnableFa ? "checked" : ""} /> Enable -fa 1 on Vulkan</label>` : ""}
-          <label class="suite-check-label"><input type="checkbox" id="sys-light-term" ${state.ui.lightTerminal ? "checked" : ""} /> Light Terminal (#F0EFEA)</label>
-        </div>
-        <button type="button" class="btn btn-outline" id="btn-sys-reset-parity">Reset Suites to Parity Defaults</button>
-      </div>
-    `;
-  }
-
-  // ---------- TAB 2: MODELS ("What fits, and at what context") ----------
-  function renderModelsTab() {
-    const vramNum = Number(state.hardware.vramGb) || 64;
-    const baseTiers = [16, 24, 32, 48, 64, 96, 128];
-    if (!baseTiers.includes(vramNum)) baseTiers.push(vramNum);
-    baseTiers.sort((a, b) => a - b);
-
-    const rows = Engine.computeModelFitRows(state);
-    const kv = state.ui.fitKv || "fp16";
-
-    return `
-      <h2 class="sb-section-title">What fits, and at what context</h2>
-
-      <div class="sb-inline-row">
-        <label class="sb-field-inline">
-          <span>Tier</span>
-          <select class="sb-select" id="models-tier-sel">
-            ${baseTiers.map((t) => `<option value="${t}" ${vramNum === t ? "selected" : ""}>${t}</option>`).join("")}
-          </select>
-        </label>
-
-        <label class="sb-field-inline">
-          <span>KV</span>
-          <select class="sb-select" id="models-kv-sel">
-            <option value="fp16" ${kv === "fp16" ? "selected" : ""}>f16</option>
-            <option value="q8_0" ${kv === "q8_0" ? "selected" : ""}>q8_0</option>
-            <option value="q4_0" ${kv === "q4_0" ? "selected" : ""}>q4_0</option>
-          </select>
-        </label>
-
-        <button type="button" class="btn btn-outline" id="btn-models-refresh">Refresh</button>
-        <span class="small muted">Every answer is a model and a context. A fit at 2K is not a usable result. Click a row to select.</span>
-      </div>
-
-      <div class="sb-table-wrap">
-        <table class="sb-table">
-          <thead>
-            <tr>
-              <th>Model</th>
-              <th>Quant</th>
-              <th>Kind</th>
-              <th class="num">Best ctx</th>
-              <th class="num">Total</th>
-              <th class="num">Budget</th>
-              <th class="num">Headroom</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${rows.map((r) => {
-              const isSelected = state.model.alias === r.rawModel.alias;
-              const headroomStyle = r.fits ? "" : `style="color:var(--danger);font-weight:600;"`;
-              return `
-                <tr class="${isSelected ? "is-selected" : ""}" data-fit-model-id="${esc(r.id)}" title="Click to select ${esc(r.modelLabel)}">
-                  <td>${esc(r.modelLabel)}</td>
-                  <td class="mono">${esc(r.quant)}</td>
-                  <td class="mono">${esc(r.kind)}</td>
-                  <td class="num mono">${esc(r.bestCtxLabel)}</td>
-                  <td class="num mono">${r.totalGib.toFixed(2)}</td>
-                  <td class="num mono">${r.budgetGib.toFixed(1)}</td>
-                  <td class="num mono" ${headroomStyle}>${r.headroomGib.toFixed(2)}</td>
-                </tr>
-              `;
-            }).join("")}
-          </tbody>
-        </table>
-      </div>
-
-      <div class="sb-inline-row" style="margin-top:14px;">
-        <span class="small muted" style="font-weight:600;">Custom .gguf:</span>
-        <input type="text" class="sb-input sb-input-wide mono" id="inp-custom-gguf" value="${esc(state.model.fullPath)}" placeholder="Paste full Windows or Linux .gguf path to auto-fill alias & slug" />
-        <button type="button" class="btn btn-outline" id="btn-save-custom-model">+ Save Model</button>
-      </div>
-    `;
-  }
-
-  // ---------- TAB 3: RUN ("Run benchmarks" — Screenshot 2) ----------
+  /* ---------- Renderers ---------- */
   function renderGuardrailsHtml() {
-    const { warnings } = Engine.evaluateGuardrails(state);
+    const { warnings } = E.evaluateGuardrails(state);
     if (!warnings.length) return "";
-    return warnings.map((w) => `
-      <div class="sb-banner ${w.severity === "crimson" ? "sb-banner-danger" : "sb-banner-warn"}">
-        <div>
-          <strong>${esc(w.title)}:</strong> ${esc(w.detail)}
-        </div>
-        <button type="button" class="btn btn-sm btn-outline" data-guardrail-fix="${esc(w.id)}">${esc(w.fixLabel)}</button>
-      </div>
-    `).join("");
+    return warnings
+      .map(
+        (w) =>
+          `<div class="sb-banner ${w.severity === "crimson" ? "sb-banner-danger" : "sb-banner-warn"}">
+            <span><strong>${esc(w.title)}</strong> — ${esc(w.detail)}</span>
+            <button type="button" class="btn btn-sm btn-outline" data-autofix="${esc(w.id)}">${esc(w.fixLabel)}</button>
+          </div>`
+      )
+      .join("");
   }
 
-  function bindGuardrailButtons(container) {
-    container.querySelectorAll("[data-guardrail-fix]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const fixId = btn.getAttribute("data-guardrail-fix");
-        if (fixId === "ctx_aiperf_sweep") {
-          state.suites.aiperf_sweep.c = 70000;
-          state.suites.aiperf_sweep.ctk = "q8_0";
-          state.suites.aiperf_sweep.ctv = "q8_0";
-        } else if (fixId === "ctx_benchy") {
-          state.suites.llama_benchy.c = 70000;
-        } else if (fixId === "vram_overflow") {
-          const { vramEstimate } = Engine.evaluateGuardrails(state);
-          const nextKv = vramEstimate.kvPrecision === "fp16" ? "q8_0" : "q4_0";
-          ["llama_benchy", "llmperf", "speed_bench", "agentperf", "aiperf_std", "aiperf_sweep"].forEach((sid) => {
-            state.suites[sid].ctk = nextKv;
-            state.suites[sid].ctv = nextKv;
-          });
-        }
-        persist();
-        renderApp();
-      });
-    });
+  function renderFieldInput(suiteId, field, label, type, val, attrs) {
+    return `<div class="sb-field">
+      <label>${esc(label)}</label>
+      <input type="${type}" class="sb-input" data-suite-id="${esc(suiteId)}" data-suite-field="${esc(field)}" value="${esc(val)}" ${attrs || ""} />
+    </div>`;
   }
 
-  function renderParamCustomizerDrawer() {
-    if (!state.ui.showParamCustomize) return "";
-    const selected = state.ui.selectedRunSuites || [];
-    const sBench = state.suites.llama_bench;
-    const sBenchy = state.suites.llama_benchy;
-    const sLlm = state.suites.llmperf;
-    const sSb = state.suites.speed_bench;
-    const sStd = state.suites.aiperf_std;
-    const sSwp = state.suites.aiperf_sweep;
-
-    return `
-      <div class="sb-drawer">
-        <div class="sb-inline-row" style="justify-content:space-between; margin-bottom:10px;">
-          <strong style="font-size:13px;">Customize Model Fields, Naming & Active Suite Parameters</strong>
-          <div class="sb-inline-row" style="gap:6px;">
-            <button type="button" class="btn btn-sm btn-outline" id="btn-run-save-preset">+ Save Preset</button>
-            <button type="button" class="btn btn-sm btn-outline" id="btn-run-reset-parity">Reset to Parity Defaults</button>
-          </div>
-        </div>
-
-        <div class="sb-form-grid" style="margin-bottom:12px;">
-          <div class="sb-field"><label>Model Alias (--alias)</label><input type="text" class="sb-input mono" id="run-mod-alias" value="${esc(state.model.alias)}" /></div>
-          <div class="sb-field"><label>Output File Slug</label><input type="text" class="sb-input mono" id="run-mod-slug" value="${esc(state.model.slug)}" /></div>
-          <div class="sb-field"><label>HF Tokenizer ID</label><input type="text" class="sb-input mono" id="run-mod-tok" value="${esc(state.model.tokenizer)}" /></div>
-          <div class="sb-field">
-            <label>Result Naming Mode</label>
-            <select class="sb-select" id="run-naming-mode">
-              <option value="auto" ${state.naming.mode === "auto" ? "selected" : ""}>Auto (Stamp on Customize)</option>
-              <option value="stamped" ${state.naming.mode === "stamped" ? "selected" : ""}>Mode A · Parameter-Stamped</option>
-              <option value="classic" ${state.naming.mode === "classic" ? "selected" : ""}>Mode B · Classic Parity</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="sb-form-grid">
-          ${selected.includes("llama_bench") ? `
-            <div class="sb-field"><label>llama-bench (-p / -n / -r)</label>
-              <div class="sb-inline-row" style="gap:6px;">
-                <input type="text" class="sb-input mono" data-suite-field="llama_bench.p" value="${esc(sBench.p)}" style="width:92px;" />
-                <input type="text" class="sb-input mono" data-suite-field="llama_bench.n" value="${esc(sBench.n)}" style="width:82px;" />
-                <input type="number" class="sb-input mono" data-suite-field="llama_bench.r" value="${esc(sBench.r)}" style="width:58px;" />
-              </div>
-            </div>` : ""}
-
-          ${selected.includes("llama_benchy") ? `
-            <div class="sb-field"><label>llama-benchy (-c / depth / runs)</label>
-              <div class="sb-inline-row" style="gap:6px;">
-                <input type="number" class="sb-input mono" data-suite-field="llama_benchy.c" value="${esc(sBenchy.c)}" style="width:84px;" />
-                <input type="text" class="sb-input mono" data-suite-field="llama_benchy.depth" value="${esc(sBenchy.depth)}" style="width:84px;" />
-                <input type="number" class="sb-input mono" data-suite-field="llama_benchy.runs" value="${esc(sBenchy.runs)}" style="width:54px;" />
-              </div>
-            </div>` : ""}
-
-          ${selected.includes("llmperf") ? `
-            <div class="sb-field"><label>llmperf (in / out / conc / max)</label>
-              <div class="sb-inline-row" style="gap:6px;">
-                <input type="number" class="sb-input mono" data-suite-field="llmperf.meanInput" value="${esc(sLlm.meanInput)}" style="width:68px;" />
-                <input type="number" class="sb-input mono" data-suite-field="llmperf.meanOutput" value="${esc(sLlm.meanOutput)}" style="width:64px;" />
-                <input type="number" class="sb-input mono" data-suite-field="llmperf.concurrency" value="${esc(sLlm.concurrency)}" style="width:52px;" />
-                <input type="number" class="sb-input mono" data-suite-field="llmperf.maxCompleted" value="${esc(sLlm.maxCompleted)}" style="width:54px;" />
-              </div>
-            </div>` : ""}
-
-          ${selected.includes("speed_bench") ? `
-            <div class="sb-field"><label>SPEED-Bench (-c / category / limit)</label>
-              <div class="sb-inline-row" style="gap:6px;">
-                <input type="number" class="sb-input mono" data-suite-field="speed_bench.c" value="${esc(sSb.c)}" style="width:82px;" />
-                <input type="text" class="sb-input mono" data-suite-field="speed_bench.category" value="${esc(sSb.category)}" style="width:68px;" />
-                <input type="number" class="sb-input mono" data-suite-field="speed_bench.limit" value="${esc(sSb.limit)}" style="width:54px;" />
-              </div>
-            </div>` : ""}
-
-          ${selected.includes("aiperf_std") ? `
-            <div class="sb-field"><label>AIPerf Standard (-c / conc / reqs)</label>
-              <div class="sb-inline-row" style="gap:6px;">
-                <input type="number" class="sb-input mono" data-suite-field="aiperf_std.c" value="${esc(sStd.c)}" style="width:82px;" />
-                <input type="number" class="sb-input mono" data-suite-field="aiperf_std.concurrency" value="${esc(sStd.concurrency)}" style="width:54px;" />
-                <input type="number" class="sb-input mono" data-suite-field="aiperf_std.requestCount" value="${esc(sStd.requestCount)}" style="width:60px;" />
-              </div>
-            </div>` : ""}
-
-          ${selected.includes("aiperf_sweep") ? `
-            <div class="sb-field"><label>AIPerf 64k (-c / KV / isl)</label>
-              <div class="sb-inline-row" style="gap:6px;">
-                <input type="number" class="sb-input mono" data-suite-field="aiperf_sweep.c" value="${esc(sSwp.c)}" style="width:82px;" />
-                <select class="sb-select" id="run-sweep-kv" style="width:74px;">
-                  <option value="fp16" ${sSwp.ctk === "fp16" ? "selected" : ""}>fp16</option>
-                  <option value="q8_0" ${sSwp.ctk === "q8_0" ? "selected" : ""}>q8_0</option>
-                  <option value="q4_0" ${sSwp.ctk === "q4_0" ? "selected" : ""}>q4_0</option>
-                </select>
-                <input type="text" class="sb-input mono" data-suite-field="aiperf_sweep.islList" value="${esc(sSwp.islList)}" style="width:140px;" />
-              </div>
-            </div>` : ""}
-        </div>
-      </div>
-    `;
+  function renderFieldSelect(suiteId, field, label, val, options) {
+    const opts = options
+      .map((o) => {
+        const v = typeof o === "object" ? o.value : o;
+        const t = typeof o === "object" ? o.label : o;
+        return `<option value="${esc(v)}" ${String(val) === String(v) ? "selected" : ""}>${esc(t)}</option>`;
+      })
+      .join("");
+    return `<div class="sb-field">
+      <label>${esc(label)}</label>
+      <select class="sb-select" data-suite-id="${esc(suiteId)}" data-suite-field="${esc(field)}">${opts}</select>
+    </div>`;
   }
 
-  function renderRunTab() {
-    const profile = Data.HARDWARE_PROFILES[state.hardware.profileId];
-    const auditItems = state.audit.items || {};
-    const suiteOrder = ["agentperf", "aiperf_std", "aiperf_sweep", "llama_bench", "llama_benchy", "llmperf", "speed_bench"];
-    const metaMap = {};
-    Data.SUITE_METADATA.forEach((m) => { metaMap[m.id] = m; });
-
-    const selectedIds = state.ui.selectedRunSuites || [];
-    const modelOptions = Data.QUICK_MODELS.map((m) => ({
-      id: m.id,
-      label: `${m.alias} (${m.quant || "Q4_K_M"})`,
-      alias: m.alias
-    }));
-    (state.customModels || []).forEach((cm, idx) => {
-      modelOptions.push({ id: `custom_${idx}`, label: `${cm.alias} (Custom)`, alias: cm.alias });
-    });
-    const activeMatch = modelOptions.find((o) => o.alias === state.model.alias);
-
-    const outstandingSuitesText = Data.SUITE_METADATA
-      .filter((m) => !(auditItems[m.id] && auditItems[m.id].status === "verified"))
-      .map((m) => m.shortLabel || m.id)
-      .join(", ") || "all verified";
-
-    const previewCode = Engine.buildSelectedSuitesPreview(state);
-
-    return `
-      <h2 class="sb-section-title">Run benchmarks</h2>
-
-      <div class="outstanding-box">
-        <div class="outstanding-heading">One click: the outstanding parity benchmarks.</div>
-        <div class="outstanding-list">
-          <div class="outstanding-row ${state.model.slug === "qwen38" ? "is-active" : ""}" data-outstanding-model="qwen38_27b">
-            <div class="outstanding-left"><strong>qwen38-27b</strong> · ${esc(outstandingSuitesText)}</div>
-            <div class="outstanding-right">AIPerf 64k/1k TTFT and E2E, plus Dense 27B parity suites</div>
-          </div>
-          <div class="outstanding-row ${state.model.slug === "qwen36" ? "is-active" : ""}" data-outstanding-model="qwen36_35b_moe">
-            <div class="outstanding-left"><strong>qwen36-35b-a3b</strong> · aiperf-64k, speed-bench, llama-bench, llama-benchy, llmperf</div>
-            <div class="outstanding-right">AIPerf 64k/1k TTFT and E2E on the MoE model</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="sb-inline-row" style="margin-bottom:18px;">
-        <button type="button" class="btn btn-primary" id="btn-run-outstanding">Run everything outstanding</button>
-        <button type="button" class="btn btn-outline" id="btn-check-prereqs">Check prerequisites only</button>
-      </div>
-
-      <h3 class="sb-sub-title">Or a single run</h3>
-
-      <div class="sb-inline-row" style="margin-bottom:10px;">
-        <label class="sb-field-inline">
-          <span>Model</span>
-          <select class="sb-select" id="run-model-sel">
-            ${!activeMatch ? `<option value="__current__" selected>${esc(state.model.alias)} (Custom Path)</option>` : ""}
-            ${modelOptions.map((o) => `<option value="${esc(o.id)}" ${activeMatch && activeMatch.id === o.id ? "selected" : ""}>${esc(o.label)}</option>`).join("")}
-          </select>
-        </label>
-
-        <span class="sb-field-inline"><span>Suites</span></span>
-        <div class="suite-checks">
-          ${suiteOrder.map((sid) => {
-            const m = metaMap[sid];
-            const checked = selectedIds.includes(sid);
-            const verified = auditItems[sid] && auditItems[sid].status === "verified";
-            return `
-              <label class="suite-check-label ${verified ? "is-verified" : ""}" title="${esc(m.title)}">
-                <input type="checkbox" data-run-suite-chk="${sid}" ${checked ? "checked" : ""} />
-                <span>${esc(m.shortLabel || sid)}</span>
-              </label>
-            `;
-          }).join("")}
-        </div>
-      </div>
-
-      <div class="sb-inline-row">
-        <label class="sb-field-inline" style="min-width:240px;">
-          <span>Note</span>
-          <input type="text" class="sb-input" id="run-note-inp" value="${esc(state.ui.runNote || "")}" placeholder="Performance fan profile" style="min-width:190px;" />
-        </label>
-        <button type="button" class="btn btn-outline" id="btn-preview-commands">Preview commands</button>
-        <button type="button" class="btn btn-primary" id="btn-copy-run-commands">Copy commands</button>
-        <button type="button" class="btn btn-outline" id="btn-toggle-customize">Customize parameters ${state.ui.showParamCustomize ? "▴" : "▾"}</button>
-        <button type="button" class="btn btn-outline" id="btn-dl-run-script">Download ${profile.os === "windows" ? ".ps1" : ".sh"}</button>
-      </div>
-
-      <div id="run-guardrails-host">${renderGuardrailsHtml()}</div>
-      ${renderParamCustomizerDrawer()}
-
-      <div class="sb-terminal-wrap">
-        <div class="sb-terminal-bar">
-          <span id="run-terminal-meta">${esc(state.ui.previewMode || "selected")} · ${esc(profile.shell)} · ${esc(state.model.alias)}</span>
-          <button type="button" class="btn btn-sm btn-outline" id="btn-copy-terminal-inline">Copy</button>
-        </div>
-        <pre class="sb-terminal-pre" id="run-terminal-pre">${Engine.highlightShell(previewCode)}</pre>
-      </div>
-    `;
+  function renderFieldCheck(suiteId, field, label, checked) {
+    return `<div class="sb-field">
+      <label>${esc(label)}</label>
+      <label class="sb-field-inline" style="height:32px">
+        <input type="checkbox" data-suite-id="${esc(suiteId)}" data-suite-field="${esc(field)}" ${checked ? "checked" : ""} />
+        <span>${checked ? "Enabled" : "Disabled"}</span>
+      </label>
+    </div>`;
   }
 
-  // ---------- TAB 4: RESULTS ----------
-  function renderSvgBarChart(title, subtitle, items, unit) {
-    if (!items.length) {
-      return `<div class="sb-chart-card"><h4 style="margin:0;">${esc(title)}</h4><p class="small muted">${esc(subtitle)}</p><div class="small muted">No matching parsed files loaded yet.</div></div>`;
+  function renderSuiteDrawerFields(suiteId) {
+    const s = state.suites[suiteId];
+    const kvOpts = ["fp16", "q8_0", "q4_0"];
+    const faOpts = ["1", "on", "0", "off", "auto"];
+
+    if (suiteId === "llama_bench") {
+      return (
+        renderFieldInput(suiteId, "ngl", "-ngl", "number", s.ngl) +
+        renderFieldSelect(suiteId, "fa", "-fa", s.fa, faOpts) +
+        renderFieldInput(suiteId, "p", "-p (Prompt Sizes)", "text", s.p) +
+        renderFieldInput(suiteId, "n", "-n (Gen Tokens)", "text", s.n) +
+        renderFieldInput(suiteId, "r", "-r (Repetitions)", "number", s.r) +
+        renderFieldInput(suiteId, "b", "-b (Batch)", "number", s.b) +
+        renderFieldInput(suiteId, "ub", "-ub (uBatch)", "number", s.ub) +
+        renderFieldSelect(suiteId, "format", "-o Format", s.format, ["md", "json", "csv"])
+      );
     }
-    const maxVal = Math.max(...items.map((i) => i.value), 1);
-    const rowH = 30;
-    const svgH = items.length * rowH + 20;
+    if (suiteId === "llama_benchy") {
+      return (
+        renderFieldInput(suiteId, "c", "Server -c", "number", s.c) +
+        renderFieldInput(suiteId, "np", "Server -np", "number", s.np) +
+        renderFieldSelect(suiteId, "ctk", "-ctk", s.ctk, kvOpts) +
+        renderFieldSelect(suiteId, "ctv", "-ctv", s.ctv, kvOpts) +
+        renderFieldSelect(suiteId, "fa", "-fa", s.fa, faOpts) +
+        renderFieldInput(suiteId, "pp", "--pp", "text", s.pp) +
+        renderFieldInput(suiteId, "tg", "--tg", "text", s.tg) +
+        renderFieldInput(suiteId, "depth", "--depth", "text", s.depth) +
+        renderFieldInput(suiteId, "runs", "--runs", "number", s.runs)
+      );
+    }
+    if (suiteId === "llmperf") {
+      return (
+        renderFieldInput(suiteId, "c", "Server -c", "number", s.c) +
+        renderFieldInput(suiteId, "np", "Server -np", "number", s.np) +
+        renderFieldSelect(suiteId, "ctk", "-ctk", s.ctk, kvOpts) +
+        renderFieldSelect(suiteId, "ctv", "-ctv", s.ctv, kvOpts) +
+        renderFieldInput(suiteId, "concurrency", "--num-concurrent-requests", "number", s.concurrency) +
+        renderFieldInput(suiteId, "maxCompleted", "--max-num-completed-requests", "number", s.maxCompleted) +
+        renderFieldInput(suiteId, "meanInput", "--mean-input-tokens", "number", s.meanInput) +
+        renderFieldInput(suiteId, "stddevInput", "--stddev-input-tokens", "number", s.stddevInput) +
+        renderFieldInput(suiteId, "meanOutput", "--mean-output-tokens", "number", s.meanOutput) +
+        renderFieldInput(suiteId, "stddevOutput", "--stddev-output-tokens", "number", s.stddevOutput)
+      );
+    }
+    if (suiteId === "speed_bench") {
+      return (
+        renderFieldSelect(suiteId, "contextPreset", "Server Context (-c)", s.contextPreset || String(s.c), [
+          { value: "16384", label: "16K (16384)" },
+          { value: "32768", label: "32K (32768)" },
+          { value: "65536", label: "64K (65536)" }
+        ]) +
+        renderFieldInput(suiteId, "np", "Server -np", "number", s.np) +
+        renderFieldSelect(suiteId, "ctk", "-ctk", s.ctk, kvOpts) +
+        renderFieldSelect(suiteId, "ctv", "-ctv", s.ctv, kvOpts) +
+        renderFieldSelect(suiteId, "fa", "-fa", s.fa, faOpts) +
+        renderFieldCheck(suiteId, "jinja", "--jinja Flag", s.jinja) +
+        renderFieldInput(suiteId, "category", "--category", "text", s.category) +
+        renderFieldInput(suiteId, "osl", "--osl", "number", s.osl) +
+        renderFieldInput(suiteId, "concurrency", "--concurrency", "number", s.concurrency) +
+        renderFieldInput(suiteId, "limit", "--limit", "number", s.limit) +
+        renderFieldInput(suiteId, "compareBaselineFile", "Compare Baseline JSON", "text", s.compareBaselineFile) +
+        renderFieldInput(suiteId, "compareSpeculativeFile", "Compare Speculative JSON", "text", s.compareSpeculativeFile)
+      );
+    }
+    if (suiteId === "agentperf") {
+      return (
+        renderFieldInput(suiteId, "c", "Server -c", "number", s.c) +
+        renderFieldInput(suiteId, "np", "Server -np", "number", s.np) +
+        renderFieldSelect(suiteId, "ctk", "-ctk", s.ctk, kvOpts) +
+        renderFieldSelect(suiteId, "ctv", "-ctv", s.ctv, kvOpts) +
+        renderFieldSelect(suiteId, "fa", "-fa", s.fa, faOpts) +
+        renderFieldInput(suiteId, "extraFlags", "Extra Client Flags", "text", s.extraFlags || "")
+      );
+    }
+    if (suiteId === "aiperf_std") {
+      return (
+        renderFieldInput(suiteId, "c", "Server -c", "number", s.c) +
+        renderFieldInput(suiteId, "np", "Server -np", "number", s.np) +
+        renderFieldSelect(suiteId, "ctk", "-ctk", s.ctk, kvOpts) +
+        renderFieldSelect(suiteId, "ctv", "-ctv", s.ctv, kvOpts) +
+        renderFieldSelect(suiteId, "fa", "-fa", s.fa, faOpts) +
+        renderFieldInput(suiteId, "concurrency", "--concurrency", "number", s.concurrency) +
+        renderFieldInput(suiteId, "requestCount", "--request-count", "number", s.requestCount) +
+        renderFieldInput(suiteId, "islMean", "--synthetic-input-tokens-mean", "number", s.islMean) +
+        renderFieldInput(suiteId, "oslMean", "--output-tokens-mean", "number", s.oslMean) +
+        renderFieldCheck(suiteId, "ignoreEos", "ignore_eos:true", s.ignoreEos)
+      );
+    }
+    if (suiteId === "aiperf_sweep") {
+      return (
+        renderFieldInput(suiteId, "c", "Server -c", "number", s.c) +
+        renderFieldInput(suiteId, "np", "Server -np", "number", s.np) +
+        renderFieldSelect(suiteId, "ctk", "-ctk", s.ctk, kvOpts) +
+        renderFieldSelect(suiteId, "ctv", "-ctv", s.ctv, kvOpts) +
+        renderFieldSelect(suiteId, "fa", "-fa", s.fa, faOpts) +
+        renderFieldInput(suiteId, "islList", "Sweep ISLs", "text", s.islList) +
+        renderFieldInput(suiteId, "oslList", "Sweep OSLs", "text", s.oslList) +
+        renderFieldInput(suiteId, "concurrency", "--concurrency", "number", s.concurrency) +
+        renderFieldInput(suiteId, "warmupCount", "--warmup-request-count", "number", s.warmupCount) +
+        renderFieldInput(suiteId, "requestCount", "--request-count", "number", s.requestCount) +
+        renderFieldInput(suiteId, "randomSeed", "--random-seed", "number", s.randomSeed) +
+        renderFieldCheck(suiteId, "ignoreEos", "ignore_eos:true", s.ignoreEos) +
+        renderFieldCheck(suiteId, "cachePrompt", "cache_prompt", s.cachePrompt)
+      );
+    }
+    return "";
+  }
+
+  function renderPathsDrawer() {
+    if (!state.ui.showPathsAndNaming) return "";
+    const profile = D.HARDWARE_PROFILES[state.hardware.profileId];
+    const presetsHtml = (state.customPresets || [])
+      .map(
+        (p) =>
+          `<span class="sb-chip-group">
+            <button type="button" class="sb-chip ${state.naming.activePresetName === p.name ? "active" : ""}" data-apply-preset="${esc(p.name)}">${esc(p.name)}</button>
+            <button type="button" class="sb-chip-x" title="Delete preset" data-delete-preset="${esc(p.name)}">&times;</button>
+          </span>`
+      )
+      .join("");
+
+    const multiGpuHtml = profile.supportsMultiGpu
+      ? `<div class="sb-field"><label>Device (-dev)</label><input type="text" class="sb-input" data-hw-field="nvidiaDevice" value="${esc(state.hardware.nvidiaDevice || "")}" /></div>
+         <div class="sb-field"><label>Tensor Split (-ts)</label><input type="text" class="sb-input" data-hw-field="tensorSplit" value="${esc(state.hardware.tensorSplit || "")}" placeholder="e.g. 1,1" /></div>`
+      : "";
+
+    return `<div class="sb-drawer">
+      <div class="sb-form-grid">
+        <div class="sb-field"><label>Llama Bin Dir</label><input type="text" class="sb-input" data-hw-field="binDir" value="${esc(state.hardware.binDir)}" /></div>
+        <div class="sb-field"><label>Repo Dir</label><input type="text" class="sb-input" data-hw-field="repoDir" value="${esc(state.hardware.repoDir)}" /></div>
+        <div class="sb-field"><label>Bench Root</label><input type="text" class="sb-input" data-hw-field="benchRoot" value="${esc(state.hardware.benchRoot)}" /></div>
+        <div class="sb-field"><label>Results Dir</label><input type="text" class="sb-input" data-hw-field="resultsDir" value="${esc(state.hardware.resultsDir)}" /></div>
+        <div class="sb-field"><label>Model Alias</label><input type="text" class="sb-input" data-model-field="alias" value="${esc(state.model.alias)}" /></div>
+        <div class="sb-field"><label>Output Slug</label><input type="text" class="sb-input" data-model-field="slug" value="${esc(state.model.slug)}" /></div>
+        <div class="sb-field"><label>Tokenizer ID</label><input type="text" class="sb-input" data-model-field="tokenizer" value="${esc(state.model.tokenizer)}" /></div>
+        <div class="sb-field"><label>Weight (GB)</label><input type="number" step="0.1" class="sb-input" data-model-field="weightGb" value="${esc(state.model.weightGb)}" /></div>
+        <div class="sb-field"><label>Params (B)</label><input type="number" step="0.5" class="sb-input" data-model-field="paramsB" value="${esc(state.model.paramsB)}" /></div>
+        <div class="sb-field"><label>Server Host</label><input type="text" class="sb-input" data-hw-field="host" value="${esc(state.hardware.host)}" /></div>
+        <div class="sb-field"><label>Server Port</label><input type="number" class="sb-input" data-hw-field="port" value="${esc(state.hardware.port)}" /></div>
+        <div class="sb-field">
+          <label>Client --model Flag</label>
+          <select class="sb-select" data-model-field="clientModelMode">
+            <option value="alias" ${state.model.clientModelMode === "alias" ? "selected" : ""}>Alias (--alias)</option>
+            <option value="fullPath" ${state.model.clientModelMode === "fullPath" ? "selected" : ""}>Full GGUF Path</option>
+          </select>
+        </div>
+        <div class="sb-field">
+          <label>Filename Naming</label>
+          <select class="sb-select" data-naming-mode>
+            <option value="auto" ${state.naming.mode === "auto" ? "selected" : ""}>Auto (Classic on Default, Stamped on Edit)</option>
+            <option value="stamped" ${state.naming.mode === "stamped" ? "selected" : ""}>Always Stamped (_c32k_fp16)</option>
+            <option value="classic" ${state.naming.mode === "classic" ? "selected" : ""}>Always Classic</option>
+          </select>
+        </div>
+        ${multiGpuHtml}
+      </div>
+      <div class="sb-inline-row" style="margin-top:12px; padding-top:10px; border-top:1px solid var(--border-soft);">
+        <input type="text" class="sb-input" id="preset-name-input" placeholder="Save current parameters as preset..." style="min-width:220px" />
+        <button type="button" class="btn btn-sm btn-outline" data-action="save-preset">+ Save Preset</button>
+        ${presetsHtml}
+        <button type="button" class="btn btn-sm btn-danger" data-action="reset-all-suites">Reset Parity Defaults</button>
+      </div>
+    </div>`;
+  }
+
+  function renderBenchmarksTab() {
+    const profile = D.HARDWARE_PROFILES[state.hardware.profileId];
+    const profileOpts = Object.values(D.HARDWARE_PROFILES)
+      .map(
+        (p) =>
+          `<option value="${esc(p.id)}" ${p.id === state.hardware.profileId ? "selected" : ""}>${esc(p.name)}</option>`
+      )
+      .join("");
+
+    const amdBackendSelect =
+      profile.id === "amd_win_x64"
+        ? `<label class="sb-field-inline">Backend
+             <select class="sb-select" data-action="change-amd-backend">
+               <option value="vulkan" ${state.hardware.amdBackend === "vulkan" ? "selected" : ""}>Vulkan</option>
+               <option value="rocm" ${state.hardware.amdBackend === "rocm" ? "selected" : ""}>ROCm HIP</option>
+             </select>
+           </label>`
+        : "";
+
+    const quickChips = D.QUICK_MODELS.map((m) => {
+      const isAct = state.model.slug === m.slug || state.model.alias === m.alias;
+      return `<button type="button" class="sb-chip ${isAct ? "active" : ""}" data-select-model="${esc(m.id)}">${esc(m.label)}</button>`;
+    }).join("");
+
+    const customChips = (state.customModels || [])
+      .map((m) => {
+        const isAct = state.model.slug === m.slug || state.model.alias === m.alias;
+        return `<span class="sb-chip-group">
+          <button type="button" class="sb-chip ${isAct ? "active" : ""}" data-select-model="${esc(m.id)}">${esc(m.label || m.alias)}</button>
+          <button type="button" class="sb-chip-x" title="Remove model" data-remove-model="${esc(m.id)}">&times;</button>
+        </span>`;
+      })
+      .join("");
+
+    const suiteCardsHtml = D.SUITE_METADATA.map((meta) => {
+      const modified = E.isSuiteCustomized(state, meta.id);
+      const target = E.getOutputTarget(state, meta.id);
+      const expanded = Boolean(state.ui.expandedDrawers[meta.id]);
+      const serverCmd = meta.hasServer ? E.buildServerCommand(state, meta.id) : "";
+      const clientCmd = E.buildSuiteClientCommand(state, meta.id);
+
+      const modBadge = modified
+        ? `<span class="sb-badge sb-badge-warn" data-suite-mod="${esc(meta.id)}">Modified</span>`
+        : `<span class="sb-badge sb-badge-warn" data-suite-mod="${esc(meta.id)}" style="display:none">Modified</span>`;
+
+      const resetBtn = modified
+        ? `<button type="button" class="btn btn-sm btn-danger" data-reset-suite="${esc(meta.id)}">Reset</button>`
+        : "";
+
+      const copyServerBtn = meta.hasServer
+        ? `<button type="button" class="btn btn-sm btn-outline" data-copy-server="${esc(meta.id)}">Copy Server</button>`
+        : "";
+
+      const serverBox = meta.hasServer
+        ? `<div class="sb-terminal-wrap">
+             <div class="sb-terminal-bar">
+               <span>Terminal 1 — Server</span>
+               <button type="button" class="btn btn-sm" data-copy-server="${esc(meta.id)}">Copy</button>
+             </div>
+             <pre class="sb-terminal-pre" data-server-pre="${esc(meta.id)}">${E.highlightShell(serverCmd)}</pre>
+           </div>`
+        : "";
+
+      const drawerHtml = expanded
+        ? `<div class="sb-drawer"><div class="sb-form-grid">${renderSuiteDrawerFields(meta.id)}</div></div>`
+        : "";
+
+      return `<div class="suite-card" data-suite-card="${esc(meta.id)}">
+        <div class="suite-card-header">
+          <div class="suite-card-title">
+            <span class="suite-card-num">${esc(meta.index)}</span>
+            <span>${esc(meta.title)}</span>
+            <code class="suite-output-tag" data-output-tag="${esc(meta.id)}">-&gt; ${esc(target.leaf)}</code>
+            ${modBadge}
+          </div>
+          <div class="suite-card-actions">
+            <button type="button" class="btn btn-sm" data-toggle-drawer="${esc(meta.id)}">Parameters ${expanded ? "&#9652;" : "&#9662;"}</button>
+            ${resetBtn}
+            ${copyServerBtn}
+            <button type="button" class="btn btn-sm btn-primary" data-copy-client="${esc(meta.id)}">Copy Command</button>
+          </div>
+        </div>
+        ${drawerHtml}
+        <div class="suite-terminals-stack">
+          ${serverBox}
+          <div class="sb-terminal-wrap">
+            <div class="sb-terminal-bar">
+              <span>${meta.hasServer ? "Terminal 2 — Client" : "Command"}</span>
+              <button type="button" class="btn btn-sm" data-copy-client="${esc(meta.id)}">Copy</button>
+            </div>
+            <pre class="sb-terminal-pre" data-client-pre="${esc(meta.id)}">${E.highlightShell(clientCmd)}</pre>
+          </div>
+        </div>
+      </div>`;
+    }).join("");
+
+    const playbookExt = profile.shell === "powershell" ? ".ps1" : ".sh";
+
     return `
-      <div class="sb-chart-card">
-        <h4 style="margin:0; font-size:13.5px;">${esc(title)}</h4>
-        <div class="small muted">${esc(subtitle)}</div>
-        <svg class="sb-chart-svg" viewBox="0 0 560 ${svgH}">
-          ${items.map((item, idx) => {
-            const y = idx * rowH + 10;
-            const barW = Math.max(4, Math.round((item.value / maxVal) * 280));
-            const color = item.color || "var(--accent)";
-            return `
-              <text x="4" y="${y + 13}" fill="var(--text-secondary)" font-size="11" font-family="var(--font-mono)">${esc(item.label.slice(0, 26))}</text>
-              <rect x="205" y="${y + 2}" width="280" height="14" rx="4" fill="var(--chart-grid)" />
-              <rect x="205" y="${y + 2}" width="${barW}" height="14" rx="4" fill="${color}" />
-              <text x="${213 + barW}" y="${y + 13}" fill="var(--text-primary)" font-size="11" font-weight="700" font-family="var(--font-mono)">${item.value} ${esc(unit)}</text>
-            `;
-          }).join("")}
-        </svg>
+      <div class="config-section">
+        <div class="config-bar">
+          <label class="sb-field-inline">Platform
+            <select class="sb-select" data-action="change-profile">${profileOpts}</select>
+          </label>
+          ${amdBackendSelect}
+          <label class="sb-field-inline">VRAM (GB)
+            <input type="number" class="sb-input" style="width:76px" data-hw-field="vramGb" value="${esc(state.hardware.vramGb)}" />
+          </label>
+          <div class="sb-pill-row">${quickChips}${customChips}</div>
+          <button type="button" class="btn btn-sm btn-outline" style="margin-left:auto" data-action="toggle-paths-drawer">
+            Paths &amp; Naming ${state.ui.showPathsAndNaming ? "&#9652;" : "&#9662;"}
+          </button>
+        </div>
+
+        <div class="config-model-row">
+          <label class="sb-field-inline" style="flex:1; min-width:260px;">Model (.gguf)
+            <input type="text" class="sb-input sb-input-wide" data-model-field="fullPath" value="${esc(state.model.fullPath)}" />
+          </label>
+          <button type="button" class="btn btn-sm btn-outline" data-action="add-custom-model">+ Add Model</button>
+        </div>
+
+        ${renderPathsDrawer()}
+      </div>
+
+      <div id="guardrails-root">${renderGuardrailsHtml()}</div>
+
+      <div class="suite-list">${suiteCardsHtml}</div>
+
+      <div class="playbook-footer">
+        <span class="playbook-footer-title">Full Playbook (${esc(profile.shortName)} · ${esc(state.model.alias || state.model.slug)})</span>
+        <div class="playbook-footer-actions">
+          <button type="button" class="btn btn-sm btn-outline" data-action="copy-playbook">Copy Playbook</button>
+          <button type="button" class="btn btn-sm btn-primary" data-action="download-playbook">Download ${esc(playbookExt)}</button>
+        </div>
       </div>
     `;
+  }
+
+  function renderSvgBars(title, rows, unit) {
+    const valid = rows.filter((r) => r.value > 0);
+    if (!valid.length) return "";
+    const maxVal = Math.max(...valid.map((r) => r.value), 1);
+    const barH = 22;
+    const gap = 8;
+    const svgH = valid.length * (barH + gap) + 12;
+
+    const bars = valid
+      .map((r, i) => {
+        const y = 6 + i * (barH + gap);
+        const pct = Math.max(4, Math.round((r.value / maxVal) * 230));
+        const fill = r.gpuLabel.includes("DGX") ? "#10b981" : "#1b5698";
+        return `<g>
+          <text x="0" y="${y + 15}" fill="currentColor" font-size="11">${esc(r.label)}</text>
+          <rect x="195" y="${y + 2}" width="${pct}" height="16" rx="4" fill="${fill}" opacity="0.88"></rect>
+          <text x="${202 + pct}" y="${y + 14}" fill="currentColor" font-size="11" font-weight="600">${r.value}${esc(unit)}</text>
+        </g>`;
+      })
+      .join("");
+
+    return `<div class="sb-chart-card">
+      <div style="font-size:12.5px;font-weight:700">${esc(title)}</div>
+      <svg class="sb-chart-svg" viewBox="0 0 490 ${svgH}" aria-label="${esc(title)}">${bars}</svg>
+    </div>`;
   }
 
   function renderResultsTab() {
-    const items = state.audit.items || {};
-    const verifiedCount = Object.values(items).filter((i) => i && i.status === "verified").length;
-    const hasShowDir = typeof global.showDirectoryPicker === "function";
-    const records = state.results.loadedRecords || [];
+    const auditRows = D.SUITE_METADATA.map((meta) => {
+      const target = E.getOutputTarget(state, meta.id);
+      const item = (state.audit.items || {})[meta.id];
+      const badgeClass = !item
+        ? ""
+        : item.status === "verified"
+          ? "sb-badge-ok"
+          : item.status === "partial"
+            ? "sb-badge-warn"
+            : item.status === "stub"
+              ? "sb-badge-danger"
+              : "";
+      const statusLabel = item ? item.label : "NOT AUDITED";
+      const detail = item ? item.detail : `Expected: ${target.leaf}`;
+      return `<tr>
+        <td><strong>${esc(meta.index)} ${esc(meta.title)}</strong></td>
+        <td><code>${esc(target.leaf)}</code></td>
+        <td><span class="sb-badge ${badgeClass}">${esc(statusLabel)}</span></td>
+        <td>${esc(detail)}</td>
+      </tr>`;
+    }).join("");
 
-    const benchBars = [];
-    const depthBars = [];
-    const concBars = [];
-    if (state.ui.showCharts) {
-      records.filter((r) => r.suiteType === "llama_bench").forEach((r) => {
-        if (r.metrics.tg128) benchBars.push({ label: `${r.gpuLabel.split(" ")[0]} ${r.modelLabel.split(" ")[0]} tg128`, value: r.metrics.tg128, color: "var(--accent)" });
-        if (r.metrics.pp512) benchBars.push({ label: `${r.gpuLabel.split(" ")[0]} ${r.modelLabel.split(" ")[0]} pp/10`, value: Math.round(r.metrics.pp512 / 10), color: "var(--ok)" });
-      });
-      records.filter((r) => r.suiteType === "llama_benchy").forEach((r) => {
-        depthBars.push({ label: `${r.gpuLabel.split(" ")[0]} ${r.modelLabel.split(" ")[0]}`, value: r.metrics.degradationPct || 0, color: "var(--warn)" });
-      });
-      records.filter((r) => r.suiteType === "llmperf").forEach((r) => {
-        concBars.push({ label: `${r.gpuLabel.split(" ")[0]} ${r.modelLabel.split(" ")[0]}`, value: r.metrics.totalTps || 0, color: "var(--accent)" });
-      });
+    const activeRecords = [
+      ...(state.results.includeSampleData ? D.SAMPLE_RESULTS_DATASET : []),
+      ...(state.results.loadedRecords || [])
+    ];
+
+    const recordRows = activeRecords.length
+      ? activeRecords
+          .map((r) => {
+            const mStr = Object.entries(r.metrics || {})
+              .map(([k, v]) => `${k}: ${v}`)
+              .join(" · ");
+            return `<tr>
+              <td><code>${esc(r.suiteType)}</code></td>
+              <td>${esc(r.gpuLabel)}</td>
+              <td>${esc(r.modelLabel)}</td>
+              <td><code>${esc(mStr)}</code></td>
+              <td>${esc(r.sourceFile)}</td>
+            </tr>`;
+          })
+          .join("")
+      : `<tr><td colspan="5" style="text-align:center;color:var(--text-muted)">Load .md/.json output files or toggle the DGX vs R9700 sample dataset.</td></tr>`;
+
+    let chartsHtml = "";
+    if (state.ui.showCharts && activeRecords.length) {
+      const tg128Rows = activeRecords
+        .filter((r) => r.suiteType === "llama_bench" && r.metrics?.tg128)
+        .map((r) => ({
+          label: `${r.gpuLabel.split(" ")[0]} · ${r.modelLabel.split(" ")[0]}`,
+          gpuLabel: r.gpuLabel,
+          value: r.metrics.tg128
+        }));
+      const speedRows = activeRecords
+        .filter((r) => r.suiteType === "speed_bench" && r.metrics?.overall)
+        .map((r) => ({
+          label: `${r.gpuLabel.split(" ")[0]} · ${r.modelLabel.split(" ")[0]}`,
+          gpuLabel: r.gpuLabel,
+          value: r.metrics.overall
+        }));
+      chartsHtml = `<div class="sb-chart-grid">
+        ${renderSvgBars("llama-bench Decode tg128 (tok/s)", tg128Rows, " t/s")}
+        ${renderSvgBars("SPEED-Bench Overall Decode (tok/s)", speedRows, " t/s")}
+      </div>`;
     }
 
-    return `
-      <h2 class="sb-section-title">Results & Anti-1KB Audit Coverage (${verifiedCount}/7 Verified)</h2>
-
-      <div class="sb-inline-row">
-        ${hasShowDir ? `<button type="button" class="btn btn-primary" id="btn-pick-dir-api">Open Results Folder</button>` : ""}
-        <label class="btn btn-outline" style="cursor:pointer;">
-          Select Folder (file:// Safe)
-          <input type="file" id="inp-webkit-dir" webkitdirectory multiple class="hidden" />
-        </label>
-        <button type="button" class="btn btn-outline" id="btn-gen-missing-run">Select Missing in Run Tab</button>
-        <span class="small muted">
-          ${state.audit.lastFolderName ? `Last Audited: <strong>${esc(state.audit.lastFolderName)}</strong> (${esc(state.audit.lastAuditedAt)})` : "Drops inspect byte sizes & parsed JSON/MD rows."}
-        </span>
-      </div>
-
-      <div class="sb-dropzone" id="audit-dropzone">
-        <strong>Drop Centralized Results Folder or Benchmark Files Here</strong>
-        <div class="small muted">Detects &gt;1 KB stubs, incomplete <code>llama-benchy</code> depth runs, and <code>aiperf.log</code> overflow errors.</div>
-      </div>
-
-      <div class="sb-table-wrap">
-        <table class="sb-table">
-          <thead><tr><th>Suite</th><th>Expected Output Target</th><th>Status</th><th>Audit Findings</th></tr></thead>
-          <tbody>
-            ${Data.SUITE_METADATA.map((meta) => {
-              const exp = Engine.getOutputTarget(state, meta.id);
-              const r = items[meta.id] || { status: "not_run", label: "NOT RUN", detail: "Select or drop a folder to audit." };
-              const cls = r.status === "verified" ? "sb-badge-ok" : r.status === "partial" ? "sb-badge-warn" : r.status === "stub" ? "sb-badge-danger" : "";
-              return `
-                <tr>
-                  <td><strong>${esc(meta.shortLabel || meta.id)}</strong></td>
-                  <td class="mono small">${esc(exp.leaf)}</td>
-                  <td><span class="sb-badge ${cls}">${esc(r.label)}</span></td>
-                  <td class="small muted">${esc(r.detail)}</td>
-                </tr>`;
-            }).join("")}
-          </tbody>
-        </table>
-      </div>
-
-      <h3 class="sb-sub-title">Parsed Benchmark Comparisons (${records.length})</h3>
-      <div class="sb-inline-row">
-        <button type="button" class="btn btn-outline" id="btn-load-sample-data">Load Sample Dataset (DGX vs R9700)</button>
-        <label class="btn btn-outline" style="cursor:pointer;">
-          Load .md / .json Files
-          <input type="file" id="inp-result-files" multiple accept=".md,.json,.csv" class="hidden" />
-        </label>
-        <button type="button" class="btn btn-outline" id="btn-toggle-charts">${state.ui.showCharts ? "Hide Charts" : "Show Charts"}</button>
-        <button type="button" class="btn btn-outline" id="btn-export-md">Export .md</button>
-        <button type="button" class="btn btn-outline" id="btn-export-csv">Export .csv</button>
-        ${records.length ? `<button type="button" class="btn btn-danger" id="btn-clear-results">Clear</button>` : ""}
-      </div>
-
-      ${state.ui.showCharts ? `
-        <div class="sb-chart-grid">
-          ${renderSvgBarChart("Decode (tg128) & Prefill (/10)", "Native llama-bench throughput", benchBars, "t/s")}
-          ${renderSvgBarChart("Depth 4096 KV Degradation (%)", "Lower is better KV stability", depthBars, "% drop")}
-          ${renderSvgBarChart("4-Stream Parallel Throughput", "llmperf concurrent output", concBars, "t/s")}
-        </div>` : ""}
-
-      <div class="sb-table-wrap">
-        <table class="sb-table">
-          <thead><tr><th>Source File</th><th>GPU / Backend</th><th>Model</th><th>Suite</th><th>Metrics</th></tr></thead>
-          <tbody>
-            ${records.length ? records.map((r) => `
-              <tr>
-                <td class="mono small">${esc(r.sourceFile)}</td>
-                <td>${esc(r.gpuLabel)}</td>
-                <td>${esc(r.modelLabel)}</td>
-                <td><span class="sb-badge">${esc(r.suiteType)}</span></td>
-                <td class="mono small">${esc(Object.entries(r.metrics || {}).map(([k, v]) => `${k}=${v}`).join(" · "))}</td>
-              </tr>`).join("") : `<tr><td colspan="5" class="muted">No result files loaded. Click "Load Sample Dataset" or drop .md/.json files above.</td></tr>`}
-          </tbody>
-        </table>
-      </div>
-    `;
-  }
-
-  // ---------- TAB 5: REMOTE & SETUP ----------
-  function getRemoteSectionsList() {
-    const cmds = Engine.buildSshCommands(state);
-    const setupCards = Engine.buildSetupCards(state);
-    const items = [
-      { id: "ssh_ps", label: "SSH PowerShell", code: cmds.psTrigger },
-      { id: "ssh_tmux", label: "tmux Split", code: cmds.tmuxLaunch },
-      { id: "ssh_scp", label: "SCP Pull Results", code: cmds.scpPull },
-      { id: "ssh_vram", label: "DGX VRAM Sweep", code: cmds.vramSweep },
-      { id: "ssh_startai", label: "Restore start-ai", code: cmds.startAiRestore },
-      { id: "ssh_hermes", label: "Hermes YAML", code: cmds.hermesYaml },
-      { id: "audit_deep", label: "Deep Audit Script", code: Engine.buildDeepAuditScript(state) }
-    ];
-    setupCards.forEach((c) => {
-      items.push({ id: c.id, label: c.badge, code: c.cmd });
-    });
-    return items;
-  }
-
-  function getActiveRemoteCode() {
-    const list = getRemoteSectionsList();
-    const active = list.find((it) => it.id === state.ui.remoteSection) || list[0];
-    return active ? active.code : "";
-  }
-
-  function renderRemoteTab() {
-    const s = state.ssh;
-    const list = getRemoteSectionsList();
-    const active = list.find((it) => it.id === state.ui.remoteSection) || list[0];
+    const deepAuditCmd = E.buildDeepAuditScript(state);
 
     return `
-      <h2 class="sb-section-title">SSH Remote, Hermes Stack & Platform Setup Fixes</h2>
+      <div class="config-section">
+        <div class="sb-inline-row">
+          <h2 class="sb-section-title" style="margin:0">Results Folder Audit</h2>
+          <label class="btn btn-sm btn-primary" style="cursor:pointer">
+            Select Folder
+            <input type="file" id="audit-dir-input" webkitdirectory directory multiple style="display:none" />
+          </label>
+          <label class="btn btn-sm btn-outline" style="cursor:pointer">
+            Select Files
+            <input type="file" id="audit-files-input" multiple accept=".md,.json,.log" style="display:none" />
+          </label>
+          ${state.audit.lastFolderName ? `<span class="sb-badge">${esc(state.audit.lastFolderName)}</span>` : ""}
+          ${Object.keys(state.audit.items || {}).length ? `<button type="button" class="btn btn-sm btn-danger" data-action="clear-audit">Clear Audit</button>` : ""}
+        </div>
 
-      <div class="sb-form-grid" style="margin-bottom:14px;">
-        <div class="sb-field"><label>SSH User</label><input type="text" class="sb-input mono" data-ssh-field="user" value="${esc(s.user)}" /></div>
-        <div class="sb-field"><label>Remote Host / IP</label><input type="text" class="sb-input mono" data-ssh-field="host" value="${esc(s.host)}" /></div>
-        <div class="sb-field"><label>Port / tmux Session</label>
-          <div class="sb-inline-row" style="gap:6px; flex-wrap:nowrap;">
-            <input type="number" class="sb-input mono" data-ssh-field="port" value="${esc(s.port)}" style="width:72px;" />
-            <input type="text" class="sb-input mono" data-ssh-field="tmuxSession" value="${esc(s.tmuxSession)}" style="flex:1; min-width:80px;" />
+        <div class="sb-dropzone" id="audit-dropzone">Drop a benchmark results folder or .md / .json / .log files here</div>
+
+        <div class="sb-table-wrap">
+          <table class="sb-table">
+            <thead><tr><th>Suite</th><th>Target Output</th><th>Status</th><th>Audit Detail</th></tr></thead>
+            <tbody>${auditRows}</tbody>
+          </table>
+        </div>
+
+        <div class="sb-terminal-wrap">
+          <div class="sb-terminal-bar">
+            <span>Deep Audit Script (1 KB Stub Verification)</span>
+            <button type="button" class="btn btn-sm" data-action="copy-deep-audit">Copy</button>
           </div>
+          <pre class="sb-terminal-pre" id="deep-audit-pre">${E.highlightShell(deepAuditCmd)}</pre>
         </div>
-        <div class="sb-field"><label>Remote Results Dir</label><input type="text" class="sb-input mono" data-ssh-field="remoteResultsDir" value="${esc(s.remoteResultsDir)}" /></div>
-        <div class="sb-field"><label>Local Pull Folder</label><input type="text" class="sb-input mono" data-ssh-field="localPullDir" value="${esc(s.localPullDir)}" /></div>
-        <div class="sb-field"><label>Hermes LAN IP</label><input type="text" class="sb-input mono" data-ssh-field="hermesServerIp" value="${esc(s.hermesServerIp)}" /></div>
       </div>
 
-      <div class="sb-inline-row" style="justify-content:space-between; margin-bottom:10px;">
-        <div class="sb-pill-row">
-          ${list.map((it) => `
-            <button type="button" class="sb-chip ${active.id === it.id ? "active" : ""}" data-remote-sec="${esc(it.id)}">
-              ${esc(it.label)}
-            </button>
-          `).join("")}
+      <div>
+        <div class="sb-inline-row">
+          <h2 class="sb-section-title" style="margin:0">Comparison Matrix</h2>
+          <button type="button" class="btn btn-sm ${state.results.includeSampleData ? "btn-primary" : "btn-outline"}" data-action="toggle-sample-data">
+            ${state.results.includeSampleData ? "Hide Sample (DGX vs R9700)" : "Load Sample (DGX vs R9700)"}
+          </button>
+          <label class="btn btn-sm btn-outline" style="cursor:pointer">
+            Upload .md / .json
+            <input type="file" id="compare-files-input" multiple accept=".md,.json" style="display:none" />
+          </label>
+          <button type="button" class="btn btn-sm" data-action="toggle-charts">${state.ui.showCharts ? "Hide Charts" : "Show Charts"}</button>
+          <button type="button" class="btn btn-sm" data-action="export-md">Export .md</button>
+          <button type="button" class="btn btn-sm" data-action="export-csv">Export .csv</button>
+          ${(state.results.loadedRecords || []).length ? `<button type="button" class="btn btn-sm btn-danger" data-action="clear-loaded-records">Clear Uploaded</button>` : ""}
         </div>
-        <label class="suite-check-label">
-          <input type="checkbox" id="chk-vllm-restore" ${s.includeVllmInStartAi ? "checked" : ""} />
-          <span>Include vLLM (${esc(s.vllmGpuUtil)})</span>
-        </label>
-      </div>
 
-      <div class="sb-terminal-wrap">
-        <div class="sb-terminal-bar">
-          <span>${esc(active.label)}</span>
-          <button type="button" class="btn btn-sm btn-outline" id="btn-copy-remote-inline">Copy</button>
+        ${chartsHtml}
+
+        <div class="sb-table-wrap">
+          <table class="sb-table">
+            <thead><tr><th>Suite</th><th>GPU / Backend</th><th>Model</th><th>Metrics</th><th>Source</th></tr></thead>
+            <tbody>${recordRows}</tbody>
+          </table>
         </div>
-        <pre class="sb-terminal-pre" id="remote-terminal-pre">${Engine.highlightShell(active.code)}</pre>
       </div>
     `;
   }
 
-  // ---------- Root Render & Event Wiring ----------
+  function renderSshCardsHtml() {
+    const sshCmds = E.buildSshCommands(state);
+    const setupCards = E.buildSetupCards(state).filter((c) => {
+      const isWin = D.HARDWARE_PROFILES[state.hardware.profileId].os === "windows";
+      return isWin || c.id !== "setup_cleanup";
+    });
+
+    const cards = [
+      { id: "psTrigger", title: "Windows PowerShell SSH Trigger", cmd: sshCmds.psTrigger },
+      { id: "tmuxLaunch", title: "tmux Split Session", cmd: sshCmds.tmuxLaunch },
+      { id: "scpPull", title: "scp Pull Remote Results", cmd: sshCmds.scpPull },
+      { id: "vramSweep", title: "DGX Pre-Benchmark VRAM Sweep", cmd: sshCmds.vramSweep },
+      { id: "startAiRestore", title: "Restore start-ai Stack (DGX)", cmd: sshCmds.startAiRestore },
+      ...setupCards.map((c) => ({ id: c.id, title: c.title, cmd: c.cmd }))
+    ];
+
+    return cards
+      .map(
+        (c) =>
+          `<div class="sb-terminal-wrap">
+            <div class="sb-terminal-bar">
+              <span>${esc(c.title)}</span>
+              <button type="button" class="btn btn-sm" data-copy-ssh="${esc(c.id)}">Copy</button>
+            </div>
+            <pre class="sb-terminal-pre" data-ssh-pre="${esc(c.id)}">${E.highlightShell(c.cmd)}</pre>
+          </div>`
+      )
+      .join("");
+  }
+
+  function renderSshTab() {
+    const s = state.ssh;
+    return `
+      <div class="config-section">
+        <div class="sb-form-grid">
+          <div class="sb-field"><label>SSH User</label><input type="text" class="sb-input" data-ssh-field="user" value="${esc(s.user)}" /></div>
+          <div class="sb-field"><label>SSH Host / IP</label><input type="text" class="sb-input" data-ssh-field="host" value="${esc(s.host)}" /></div>
+          <div class="sb-field"><label>SSH Port</label><input type="number" class="sb-input" data-ssh-field="port" value="${esc(s.port)}" /></div>
+          <div class="sb-field"><label>tmux Session</label><input type="text" class="sb-input" data-ssh-field="tmuxSession" value="${esc(s.tmuxSession)}" /></div>
+          <div class="sb-field"><label>Remote Results Dir</label><input type="text" class="sb-input" data-ssh-field="remoteResultsDir" value="${esc(s.remoteResultsDir)}" /></div>
+          <div class="sb-field"><label>Local Pull Dir</label><input type="text" class="sb-input" data-ssh-field="localPullDir" value="${esc(s.localPullDir)}" /></div>
+          <div class="sb-field"><label>Hermes Server IP</label><input type="text" class="sb-input" data-ssh-field="hermesServerIp" value="${esc(s.hermesServerIp)}" /></div>
+        </div>
+      </div>
+      <div class="ssh-stack" id="ssh-cards-root">${renderSshCardsHtml()}</div>
+    `;
+  }
+
+  function refreshLiveDom() {
+    const profile = D.HARDWARE_PROFILES[state.hardware.profileId];
+    const pillPlat = document.getElementById("pill-platform");
+    const pillVram = document.getElementById("pill-vram");
+    const pillModel = document.getElementById("pill-model");
+    if (pillPlat) pillPlat.innerHTML = `platform: <strong>${esc(profile.shortName)}</strong>`;
+    if (pillVram) pillVram.innerHTML = `vram: <strong>${esc(state.hardware.vramGb)} GB</strong>`;
+    if (pillModel) pillModel.innerHTML = `model: <strong>${esc(state.model.alias || state.model.slug)}</strong>`;
+
+    if (state.ui.activeTab === "benchmarks") {
+      const guardRoot = document.getElementById("guardrails-root");
+      if (guardRoot) guardRoot.innerHTML = renderGuardrailsHtml();
+
+      D.SUITE_METADATA.forEach((meta) => {
+        const target = E.getOutputTarget(state, meta.id);
+        const mod = E.isSuiteCustomized(state, meta.id);
+        const tagEl = document.querySelector(`[data-output-tag="${meta.id}"]`);
+        if (tagEl) tagEl.textContent = `-> ${target.leaf}`;
+        const modEl = document.querySelector(`[data-suite-mod="${meta.id}"]`);
+        if (modEl) modEl.style.display = mod ? "inline-flex" : "none";
+
+        const sPre = document.querySelector(`[data-server-pre="${meta.id}"]`);
+        if (sPre && meta.hasServer) sPre.innerHTML = E.highlightShell(E.buildServerCommand(state, meta.id));
+        const cPre = document.querySelector(`[data-client-pre="${meta.id}"]`);
+        if (cPre) cPre.innerHTML = E.highlightShell(E.buildSuiteClientCommand(state, meta.id));
+      });
+    } else if (state.ui.activeTab === "ssh") {
+      const sshRoot = document.getElementById("ssh-cards-root");
+      if (sshRoot) sshRoot.innerHTML = renderSshCardsHtml();
+    } else if (state.ui.activeTab === "results") {
+      const deepPre = document.getElementById("deep-audit-pre");
+      if (deepPre) deepPre.innerHTML = E.highlightShell(E.buildDeepAuditScript(state));
+    }
+  }
+
   function renderApp() {
-    applyThemeAndMotion();
+    applyThemeAndStealth();
     const root = document.getElementById("app");
     if (!root) return;
 
-    const tab = state.ui.activeTab || "run";
+    const profile = D.HARDWARE_PROFILES[state.hardware.profileId];
+    const tab = state.ui.activeTab || "benchmarks";
+
     let bodyHtml = "";
-    if (tab === "system") bodyHtml = renderSystemTab();
-    else if (tab === "models") bodyHtml = renderModelsTab();
+    if (tab === "benchmarks") bodyHtml = renderBenchmarksTab();
     else if (tab === "results") bodyHtml = renderResultsTab();
-    else if (tab === "remote") bodyHtml = renderRemoteTab();
-    else bodyHtml = renderRunTab();
+    else bodyHtml = renderSshTab();
 
     root.innerHTML = `
       <div class="sb-container">
-        ${renderHeader()}
-        ${renderTabs()}
+        <header class="sb-header">
+          <div class="sb-brand-cluster">
+            <span class="sb-brand">ai-benchmate</span>
+            <span class="sb-version">1.0.0</span>
+            <span class="sb-pill" id="pill-platform">platform: <strong>${esc(profile.shortName)}</strong></span>
+            <span class="sb-pill" id="pill-vram">vram: <strong>${esc(state.hardware.vramGb)} GB</strong></span>
+            <span class="sb-pill" id="pill-model">model: <strong>${esc(state.model.alias || state.model.slug)}</strong></span>
+          </div>
+          <div class="sb-header-controls">
+            <button type="button" class="sb-ctrl-btn ${state.ui.pauseAnimations ? "is-active" : ""}" data-action="toggle-stealth">
+              ${state.ui.pauseAnimations ? "Resume Animations" : "Pause Animations"}
+            </button>
+            <select class="sb-ctrl-select" data-action="change-theme" aria-label="Theme">
+              <option value="light" ${state.ui.theme === "light" ? "selected" : ""}>Light</option>
+              <option value="dark" ${state.ui.theme === "dark" ? "selected" : ""}>Dark</option>
+              <option value="system" ${state.ui.theme === "system" ? "selected" : ""}>System</option>
+            </select>
+          </div>
+        </header>
+
+        <nav class="folder-tabs" aria-label="Primary Tabs">
+          <button type="button" class="folder-tab ${tab === "benchmarks" ? "active" : ""}" data-tab="benchmarks">Benchmarks</button>
+          <button type="button" class="folder-tab ${tab === "results" ? "active" : ""}" data-tab="results">Results &amp; Audit</button>
+          <button type="button" class="folder-tab ${tab === "ssh" ? "active" : ""}" data-tab="ssh">SSH &amp; Setup</button>
+        </nav>
+
         <main class="sb-card">${bodyHtml}</main>
       </div>
     `;
-
-    bindEvents();
   }
 
-  function bindEvents() {
-    // Tabs
-    document.querySelectorAll("[data-tab]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        state.ui.activeTab = btn.getAttribute("data-tab");
-        persist();
-        renderApp();
-      });
+  /* ---------- Event Delegation ---------- */
+  async function handleAuditEntries(entries, folderLabel) {
+    if (!entries.length) return;
+    state.audit.items = await E.auditFileList(entries, state);
+    state.audit.lastFolderName = folderLabel || (entries[0].path.includes("/") ? entries[0].path.split("/")[0] : `${entries.length} file(s)`);
+    state.audit.lastAuditedAt = new Date().toLocaleTimeString();
+
+    for (const ent of entries) {
+      if (/\.(md|json)$/i.test(ent.name) && ent.size > 120) {
+        const parsed = E.parseResultFile(ent.name, await ent.textLoader());
+        if (parsed) {
+          const exists = (state.results.loadedRecords || []).some((r) => r.sourceFile === parsed.sourceFile);
+          if (!exists) state.results.loadedRecords.push(parsed);
+        }
+      }
+    }
+    persistState();
+    renderApp();
+  }
+
+  async function handleAuditFiles(fileList, folderLabel) {
+    const entries = Array.from(fileList || []).map((f) => ({
+      name: f.name,
+      path: f.webkitRelativePath || f.name,
+      size: f.size,
+      textLoader: () => f.text()
+    }));
+    await handleAuditEntries(entries, folderLabel);
+  }
+
+  async function handleCompareUpload(fileList) {
+    for (const f of Array.from(fileList || [])) {
+      const content = await f.text();
+      const parsed = E.parseResultFile(f.name, content);
+      if (parsed) state.results.loadedRecords.push(parsed);
+    }
+    persistState();
+    renderApp();
+  }
+
+  function readDroppedEntry(entry, list) {
+    return new Promise((resolve) => {
+      if (entry.isFile) {
+        entry.file((file) => {
+          list.push({
+            name: file.name,
+            path: entry.fullPath ? entry.fullPath.replace(/^\//, "") : file.name,
+            size: file.size,
+            textLoader: () => file.text()
+          });
+          resolve();
+        }, resolve);
+      } else if (entry.isDirectory) {
+        const reader = entry.createReader();
+        const readAll = () => {
+          reader.readEntries(async (entries) => {
+            if (!entries.length) return resolve();
+            for (const sub of entries) await readDroppedEntry(sub, list);
+            readAll();
+          }, resolve);
+        };
+        readAll();
+      } else {
+        resolve();
+      }
     });
+  }
 
-    // Header Controls
-    const stealthBtn = document.getElementById("btn-stealth-mode");
-    if (stealthBtn) {
-      stealthBtn.addEventListener("click", () => {
-        state.ui.pauseAnimations = !state.ui.pauseAnimations;
-        persist();
-        renderApp();
-      });
+  document.addEventListener("click", (ev) => {
+    const t = ev.target.closest("button");
+    if (!t) return;
+
+    if (t.dataset.tab) {
+      state.ui.activeTab = t.dataset.tab;
+      persistState();
+      renderApp();
+      return;
     }
-
-    const themeSel = document.getElementById("select-theme");
-    if (themeSel) {
-      themeSel.addEventListener("change", () => {
-        state.ui.theme = themeSel.value;
-        persist();
-        renderApp();
-      });
+    if (t.dataset.action === "toggle-stealth") {
+      state.ui.pauseAnimations = !state.ui.pauseAnimations;
+      persistState();
+      renderApp();
+      return;
     }
+    if (t.dataset.action === "toggle-paths-drawer") {
+      state.ui.showPathsAndNaming = !state.ui.showPathsAndNaming;
+      persistState();
+      renderApp();
+      return;
+    }
+    if (t.dataset.selectModel) {
+      const m = allModelChoices().find((item) => item.id === t.dataset.selectModel);
+      if (m) {
+        applyQuickModel(m);
+        persistState();
+        renderApp();
+      }
+      return;
+    }
+    if (t.dataset.removeModel) {
+      state.customModels = (state.customModels || []).filter((m) => m.id !== t.dataset.removeModel);
+      persistState();
+      renderApp();
+      return;
+    }
+    if (t.dataset.action === "add-custom-model") {
+      const parsed = E.parseModelPath(state.model.fullPath);
+      const alias = state.model.alias || parsed.alias;
+      const slug = state.model.slug || parsed.slug;
+      const newEntry = {
+        id: "custom-" + Date.now(),
+        label: alias,
+        alias,
+        slug,
+        tokenizer: state.model.tokenizer || parsed.tokenizer,
+        weightGb: Number(state.model.weightGb) || parsed.weightGb,
+        paramsB: Number(state.model.paramsB) || parsed.paramsB,
+        fullPath: state.model.fullPath
+      };
+      state.customModels = (state.customModels || []).filter((m) => m.slug !== slug && m.alias !== alias);
+      state.customModels.push(newEntry);
+      persistState();
+      renderApp();
+      return;
+    }
+    if (t.dataset.action === "save-preset") {
+      const inp = document.getElementById("preset-name-input");
+      const name = inp && inp.value.trim() ? inp.value.trim() : `Preset ${(state.customPresets || []).length + 1}`;
+      state.customPresets = (state.customPresets || []).filter((p) => p.name !== name);
+      state.customPresets.push({
+        name,
+        suites: JSON.parse(JSON.stringify(state.suites))
+      });
+      state.naming.activePresetName = name;
+      persistState();
+      renderApp();
+      return;
+    }
+    if (t.dataset.applyPreset) {
+      const found = (state.customPresets || []).find((p) => p.name === t.dataset.applyPreset);
+      if (found) {
+        state.suites = JSON.parse(JSON.stringify(found.suites));
+        state.naming.activePresetName = found.name;
+        persistState();
+        renderApp();
+      }
+      return;
+    }
+    if (t.dataset.deletePreset) {
+      state.customPresets = (state.customPresets || []).filter((p) => p.name !== t.dataset.deletePreset);
+      if (state.naming.activePresetName === t.dataset.deletePreset) state.naming.activePresetName = "Baseline Parity Defaults";
+      persistState();
+      renderApp();
+      return;
+    }
+    if (t.dataset.action === "reset-all-suites") {
+      state.suites = JSON.parse(JSON.stringify(D.PARITY_DEFAULTS));
+      state.naming.activePresetName = "Baseline Parity Defaults";
+      persistState();
+      renderApp();
+      return;
+    }
+    if (t.dataset.autofix) {
+      applyAutoFix(t.dataset.autofix);
+      return;
+    }
+    if (t.dataset.toggleDrawer) {
+      const sid = t.dataset.toggleDrawer;
+      state.ui.expandedDrawers[sid] = !state.ui.expandedDrawers[sid];
+      persistState();
+      renderApp();
+      return;
+    }
+    if (t.dataset.resetSuite) {
+      const sid = t.dataset.resetSuite;
+      state.suites[sid] = JSON.parse(JSON.stringify(D.PARITY_DEFAULTS[sid]));
+      persistState();
+      renderApp();
+      return;
+    }
+    if (t.dataset.copyServer) {
+      copyText(E.buildServerCommand(state, t.dataset.copyServer), t);
+      return;
+    }
+    if (t.dataset.copyClient) {
+      copyText(E.buildSuiteClientCommand(state, t.dataset.copyClient), t);
+      return;
+    }
+    if (t.dataset.action === "copy-playbook") {
+      copyText(E.buildAllInOnePlaybook(state, false), t);
+      return;
+    }
+    if (t.dataset.action === "download-playbook") {
+      const profile = D.HARDWARE_PROFILES[state.hardware.profileId];
+      const ext = profile.shell === "powershell" ? "ps1" : "sh";
+      downloadText(`benchmate_${state.model.slug || "run"}.${ext}`, E.buildAllInOnePlaybook(state, false));
+      return;
+    }
+    if (t.dataset.action === "clear-audit") {
+      state.audit = { lastFolderName: "", lastAuditedAt: "", items: {} };
+      persistState();
+      renderApp();
+      return;
+    }
+    if (t.dataset.action === "copy-deep-audit") {
+      copyText(E.buildDeepAuditScript(state), t);
+      return;
+    }
+    if (t.dataset.action === "toggle-sample-data") {
+      state.results.includeSampleData = !state.results.includeSampleData;
+      persistState();
+      renderApp();
+      return;
+    }
+    if (t.dataset.action === "toggle-charts") {
+      state.ui.showCharts = !state.ui.showCharts;
+      persistState();
+      renderApp();
+      return;
+    }
+    if (t.dataset.action === "export-md") {
+      const recs = [...(state.results.includeSampleData ? D.SAMPLE_RESULTS_DATASET : []), ...(state.results.loadedRecords || [])];
+      downloadText("ai_benchmate_comparison.md", E.exportComparisonMarkdown(recs));
+      return;
+    }
+    if (t.dataset.action === "export-csv") {
+      const recs = [...(state.results.includeSampleData ? D.SAMPLE_RESULTS_DATASET : []), ...(state.results.loadedRecords || [])];
+      downloadText("ai_benchmate_comparison.csv", E.exportComparisonCsv(recs));
+      return;
+    }
+    if (t.dataset.action === "clear-loaded-records") {
+      state.results.loadedRecords = [];
+      persistState();
+      renderApp();
+      return;
+    }
+    if (t.dataset.copySsh) {
+      const key = t.dataset.copySsh;
+      const sshCmds = E.buildSshCommands(state);
+      const setupMatch = E.buildSetupCards(state).find((c) => c.id === key);
+      const cmd = sshCmds[key] || (setupMatch ? setupMatch.cmd : "");
+      if (cmd) copyText(cmd, t);
+    }
+  });
 
-    const wireInput = (id, fn) => {
-      const el = document.getElementById(id);
-      if (!el) return;
-      el.addEventListener(el.type === "checkbox" || el.tagName === "SELECT" ? "change" : "input", () => {
-        fn(el);
-        persist();
+  document.addEventListener("change", (ev) => {
+    const t = ev.target;
+    if (t.dataset.action === "change-theme") {
+      state.ui.theme = t.value;
+      persistState();
+      applyThemeAndStealth();
+      return;
+    }
+    if (t.dataset.action === "change-profile") {
+      switchHardwareProfile(t.value);
+      persistState();
+      renderApp();
+      return;
+    }
+    if (t.dataset.action === "change-amd-backend") {
+      state.hardware.amdBackend = t.value;
+      state.hardware.binDir = t.value === "rocm" ? "C:\\llama.cpp\\rocm" : "C:\\llama.cpp\\vulkan";
+      persistState();
+      renderApp();
+      return;
+    }
+    if (t.dataset.namingMode !== undefined) {
+      state.naming.mode = t.value;
+      persistState();
+      refreshLiveDom();
+      return;
+    }
+    if (t.dataset.modelField && t.tagName === "SELECT") {
+      state.model[t.dataset.modelField] = t.value;
+      persistState();
+      refreshLiveDom();
+      return;
+    }
+    if (t.dataset.suiteId && t.dataset.suiteField) {
+      const sid = t.dataset.suiteId;
+      const fld = t.dataset.suiteField;
+      if (t.type === "checkbox") {
+        state.suites[sid][fld] = t.checked;
+        persistState();
+        renderApp();
+      } else if (t.tagName === "SELECT") {
+        state.suites[sid][fld] = t.value;
+        if (sid === "speed_bench" && fld === "contextPreset") {
+          state.suites.speed_bench.c = Number(t.value) || 32768;
+        }
+        persistState();
         refreshLiveDom();
-      });
-    };
-
-    // System Tab
-    const sysProf = document.getElementById("sys-profile-sel");
-    if (sysProf) sysProf.addEventListener("change", () => switchHardwareProfile(sysProf.value));
-
-    wireInput("sys-vram", (el) => { state.hardware.vramGb = Number(el.value) || 32; });
-    const amdSel = document.getElementById("sys-amd-backend");
-    if (amdSel) {
-      amdSel.addEventListener("change", () => {
-        state.hardware.amdBackend = amdSel.value;
-        state.hardware.binDir = amdSel.value === "rocm" ? "C:\\llama.cpp\\hip" : "C:\\llama.cpp\\vulkan";
-        persist();
-        renderApp();
-      });
+      }
+      return;
     }
-    wireInput("sys-nvidia-dev", (el) => { state.hardware.nvidiaDevice = el.value; });
-    wireInput("sys-tensor-split", (el) => { state.hardware.tensorSplit = el.value; });
-    wireInput("sys-host", (el) => { state.hardware.host = el.value; });
-    wireInput("sys-port", (el) => { state.hardware.port = Number(el.value) || 8080; });
-    wireInput("sys-naming-mode", (el) => { state.naming.mode = el.value; });
-    wireInput("sys-client-model-mode", (el) => { state.model.clientModelMode = el.value; });
-    wireInput("sys-bin-dir", (el) => { state.hardware.binDir = el.value; });
-    wireInput("sys-results-dir", (el) => { state.hardware.resultsDir = el.value; });
-    wireInput("sys-bench-root", (el) => { state.hardware.benchRoot = el.value; });
-    wireInput("sys-repo-dir", (el) => { state.hardware.repoDir = el.value; });
-    wireInput("sys-non-sudo", (el) => { state.hardware.nonSudoSetup = el.checked; });
-    wireInput("sys-rtx-tdigest", (el) => { state.hardware.rtxArmTdigestCompile = el.checked; });
-    wireInput("sys-amd-fa", (el) => { state.hardware.amdEnableFa = el.checked; });
-
-    const lightTermChk = document.getElementById("sys-light-term");
-    if (lightTermChk) {
-      lightTermChk.addEventListener("change", () => {
-        state.ui.lightTerminal = lightTermChk.checked;
-        persist();
-        applyThemeAndMotion();
-      });
+    if (t.id === "audit-dir-input" || t.id === "audit-files-input") {
+      handleAuditFiles(t.files);
+      return;
     }
-
-    const resetSysBtn = document.getElementById("btn-sys-reset-parity");
-    if (resetSysBtn) {
-      resetSysBtn.addEventListener("click", () => {
-        state.suites = JSON.parse(JSON.stringify(Data.PARITY_DEFAULTS));
-        state.naming.activePresetName = "Baseline Parity Defaults";
-        persist();
-        renderApp();
-      });
+    if (t.id === "compare-files-input") {
+      handleCompareUpload(t.files);
     }
+  });
 
-    // Models Tab
-    const tierSel = document.getElementById("models-tier-sel");
-    if (tierSel) {
-      tierSel.addEventListener("change", () => {
-        state.hardware.vramGb = Number(tierSel.value) || 64;
-        persist();
-        renderApp();
-      });
+  document.addEventListener("input", (ev) => {
+    const t = ev.target;
+    if (t.dataset.hwField) {
+      const f = t.dataset.hwField;
+      state.hardware[f] = t.type === "number" ? Number(t.value) || 0 : t.value;
+      persistState();
+      refreshLiveDom();
+      return;
     }
-    const kvSel = document.getElementById("models-kv-sel");
-    if (kvSel) {
-      kvSel.addEventListener("change", () => {
-        state.ui.fitKv = kvSel.value;
-        persist();
-        renderApp();
-      });
-    }
-    const refBtn = document.getElementById("btn-models-refresh");
-    if (refBtn) refBtn.addEventListener("click", () => renderApp());
-
-    document.querySelectorAll("[data-fit-model-id]").forEach((tr) => {
-      tr.addEventListener("click", () => selectModelById(tr.getAttribute("data-fit-model-id")));
-    });
-
-    const customGgufInp = document.getElementById("inp-custom-gguf");
-    if (customGgufInp) {
-      customGgufInp.addEventListener("input", () => {
-        state.model.fullPath = customGgufInp.value;
-        const parsed = Engine.parseModelPath(customGgufInp.value);
+    if (t.dataset.modelField && t.tagName !== "SELECT") {
+      const f = t.dataset.modelField;
+      if (f === "fullPath") {
+        state.model.fullPath = t.value;
+        const parsed = E.parseModelPath(t.value);
         state.model.baseDir = parsed.baseDir;
         state.model.filename = parsed.filename;
         state.model.alias = parsed.alias;
@@ -961,384 +1133,80 @@
         state.model.tokenizer = parsed.tokenizer;
         state.model.weightGb = parsed.weightGb;
         state.model.paramsB = parsed.paramsB;
-        persist();
-        refreshLiveDom();
-      });
+        ["alias", "slug", "tokenizer", "weightGb", "paramsB"].forEach((k) => {
+          const el = document.querySelector(`[data-model-field="${k}"]`);
+          if (el && document.activeElement !== el) el.value = state.model[k];
+        });
+      } else {
+        state.model[f] = t.type === "number" ? Number(t.value) || 0 : t.value;
+      }
+      persistState();
+      refreshLiveDom();
+      return;
     }
-
-    const saveModelBtn = document.getElementById("btn-save-custom-model");
-    if (saveModelBtn) {
-      saveModelBtn.addEventListener("click", () => {
-        if (!state.customModels.some((m) => m.fullPath === state.model.fullPath)) {
-          state.customModels.push({ ...state.model });
-        }
-        persist();
-        renderApp();
-      });
+    if (t.dataset.suiteId && t.dataset.suiteField && t.tagName !== "SELECT" && t.type !== "checkbox") {
+      const sid = t.dataset.suiteId;
+      const fld = t.dataset.suiteField;
+      state.suites[sid][fld] = t.type === "number" ? Number(t.value) || 0 : t.value;
+      persistState();
+      refreshLiveDom();
+      return;
     }
-
-    // Run Tab
-    document.querySelectorAll("[data-outstanding-model]").forEach((row) => {
-      row.addEventListener("click", () => {
-        selectModelById(row.getAttribute("data-outstanding-model"));
-      });
-    });
-
-    const runOutBtn = document.getElementById("btn-run-outstanding");
-    if (runOutBtn) {
-      runOutBtn.addEventListener("click", () => {
-        state.ui.previewMode = "outstanding";
-        persist();
-        renderApp();
-        copyText(document.getElementById("btn-run-outstanding"), Engine.buildSelectedSuitesPreview(state), "Run everything outstanding");
-      });
+    if (t.dataset.sshField) {
+      const f = t.dataset.sshField;
+      state.ssh[f] = t.type === "number" ? Number(t.value) || 0 : t.value;
+      persistState();
+      refreshLiveDom();
     }
+  });
 
-    const prereqBtn = document.getElementById("btn-check-prereqs");
-    if (prereqBtn) {
-      prereqBtn.addEventListener("click", () => {
-        state.ui.previewMode = "prereqs";
-        persist();
-        renderApp();
-      });
+  document.addEventListener("dragover", (ev) => {
+    const dz = ev.target.closest("#audit-dropzone");
+    if (dz) {
+      ev.preventDefault();
+      dz.classList.add("dragover");
     }
-
-    const runModelSel = document.getElementById("run-model-sel");
-    if (runModelSel) {
-      runModelSel.addEventListener("change", () => {
-        if (runModelSel.value !== "__current__") selectModelById(runModelSel.value);
-      });
+  });
+  document.addEventListener("dragleave", (ev) => {
+    const dz = ev.target.closest("#audit-dropzone");
+    if (dz) dz.classList.remove("dragover");
+  });
+  document.addEventListener("drop", async (ev) => {
+    const dz = ev.target.closest("#audit-dropzone");
+    if (!dz) return;
+    ev.preventDefault();
+    dz.classList.remove("dragover");
+    const items = ev.dataTransfer?.items;
+    if (items && items.length && items[0].webkitGetAsEntry) {
+      const entries = [];
+      for (const item of Array.from(items)) {
+        const entry = item.webkitGetAsEntry();
+        if (entry) await readDroppedEntry(entry, entries);
+      }
+      await handleAuditEntries(entries);
+    } else if (ev.dataTransfer?.files?.length) {
+      await handleAuditFiles(ev.dataTransfer.files);
     }
+  });
 
-    document.querySelectorAll("[data-run-suite-chk]").forEach((chk) => {
-      chk.addEventListener("change", () => {
-        const sid = chk.getAttribute("data-run-suite-chk");
-        const set = new Set(state.ui.selectedRunSuites || []);
-        if (chk.checked) set.add(sid);
-        else set.delete(sid);
-        state.ui.selectedRunSuites = Array.from(set);
-        state.ui.previewMode = "selected";
-        persist();
-        renderApp();
-      });
-    });
-
-    wireInput("run-note-inp", (el) => { state.ui.runNote = el.value; });
-
-    const previewBtn = document.getElementById("btn-preview-commands");
-    if (previewBtn) {
-      previewBtn.addEventListener("click", () => {
-        state.ui.previewMode = "selected";
-        persist();
-        renderApp();
-      });
-    }
-
-    const copyRunBtn = document.getElementById("btn-copy-run-commands");
-    if (copyRunBtn) {
-      copyRunBtn.addEventListener("click", () => {
-        copyText(copyRunBtn, Engine.buildSelectedSuitesPreview(state), "Copy commands");
-      });
-    }
-
-    const copyTermInline = document.getElementById("btn-copy-terminal-inline");
-    if (copyTermInline) {
-      copyTermInline.addEventListener("click", () => {
-        copyText(copyTermInline, Engine.buildSelectedSuitesPreview(state), "Copy");
-      });
-    }
-
-    const toggleCustBtn = document.getElementById("btn-toggle-customize");
-    if (toggleCustBtn) {
-      toggleCustBtn.addEventListener("click", () => {
-        state.ui.showParamCustomize = !state.ui.showParamCustomize;
-        persist();
-        renderApp();
-      });
-    }
-
-    const dlRunBtn = document.getElementById("btn-dl-run-script");
-    if (dlRunBtn) {
-      dlRunBtn.addEventListener("click", () => {
-        const prof = Data.HARDWARE_PROFILES[state.hardware.profileId];
-        const ext = prof.os === "windows" ? "ps1" : "sh";
-        downloadFile(`ai_benchmate_${state.model.slug || "run"}.${ext}`, Engine.buildSelectedSuitesPreview(state));
-      });
-    }
-
-    // Parameter customizer inside Run drawer
-    wireInput("run-mod-alias", (el) => { state.model.alias = el.value; });
-    wireInput("run-mod-slug", (el) => { state.model.slug = el.value; });
-    wireInput("run-mod-tok", (el) => { state.model.tokenizer = el.value; });
-    wireInput("run-naming-mode", (el) => { state.naming.mode = el.value; });
-
-    const runSweepKv = document.getElementById("run-sweep-kv");
-    if (runSweepKv) {
-      runSweepKv.addEventListener("change", () => {
-        state.suites.aiperf_sweep.ctk = runSweepKv.value;
-        state.suites.aiperf_sweep.ctv = runSweepKv.value;
-        persist();
-        refreshLiveDom();
-      });
-    }
-
-    document.querySelectorAll("[data-suite-field]").forEach((el) => {
-      const [sid, field] = el.getAttribute("data-suite-field").split(".");
-      el.addEventListener("input", () => {
-        state.suites[sid][field] = el.type === "number" ? (Number(el.value) || 0) : el.value;
-        persist();
-        refreshLiveDom();
-      });
-    });
-
-    const runSavePresetBtn = document.getElementById("btn-run-save-preset");
-    if (runSavePresetBtn) {
-      runSavePresetBtn.addEventListener("click", () => {
-        const name = global.prompt("Preset name:", `Custom ${state.model.slug}`);
-        if (!name || !name.trim()) return;
-        state.customPresets.push({ name: name.trim(), suites: JSON.parse(JSON.stringify(state.suites)) });
-        state.naming.activePresetName = name.trim();
-        persist();
-        renderApp();
-      });
-    }
-
-    const runResetParityBtn = document.getElementById("btn-run-reset-parity");
-    if (runResetParityBtn) {
-      runResetParityBtn.addEventListener("click", () => {
-        state.suites = JSON.parse(JSON.stringify(Data.PARITY_DEFAULTS));
-        state.naming.activePresetName = "Baseline Parity Defaults";
-        persist();
-        renderApp();
-      });
-    }
-
-    const grHost = document.getElementById("run-guardrails-host");
-    if (grHost) bindGuardrailButtons(grHost);
-
-    // Results Tab
-    async function runAuditEntries(entries, folderName) {
-      const items = await Engine.auditFileList(entries, state);
-      state.audit.items = items;
-      state.audit.lastFolderName = folderName;
-      state.audit.lastAuditedAt = new Date().toLocaleTimeString();
-      persist();
-      await Engine.saveSnapshotIDB("latest_audit", state.audit);
-      renderApp();
-    }
-
-    const pickDirBtn = document.getElementById("btn-pick-dir-api");
-    if (pickDirBtn) {
-      pickDirBtn.addEventListener("click", async () => {
-        try {
-          const dirHandle = await global.showDirectoryPicker();
-          const entries = [];
-          async function walk(handle, prefix) {
-            for await (const [name, child] of handle.entries()) {
-              const rel = prefix ? prefix + "/" + name : name;
-              if (child.kind === "file") {
-                const file = await child.getFile();
-                entries.push({ path: rel, name, size: file.size, textLoader: () => file.text() });
-              } else if (child.kind === "directory") {
-                await walk(child, rel);
-              }
-            }
-          }
-          await walk(dirHandle, "");
-          await runAuditEntries(entries, dirHandle.name);
-        } catch (_) {}
-      });
-    }
-
-    const webkitDirInp = document.getElementById("inp-webkit-dir");
-    if (webkitDirInp) {
-      webkitDirInp.addEventListener("change", async (e) => {
-        const files = Array.from(e.target.files || []);
-        if (!files.length) return;
-        const entries = files.map((f) => ({ path: f.webkitRelativePath || f.name, name: f.name, size: f.size, textLoader: () => f.text() }));
-        const rootName = (files[0].webkitRelativePath || "").split("/")[0] || "Selected Folder";
-        await runAuditEntries(entries, rootName);
-      });
-    }
-
-    const auditDrop = document.getElementById("audit-dropzone");
-    if (auditDrop) {
-      auditDrop.addEventListener("dragover", (e) => { e.preventDefault(); auditDrop.classList.add("dragover"); });
-      auditDrop.addEventListener("dragleave", () => auditDrop.classList.remove("dragover"));
-      auditDrop.addEventListener("drop", async (e) => {
-        e.preventDefault();
-        auditDrop.classList.remove("dragover");
-        const items = Array.from(e.dataTransfer.items || []);
-        const entries = [];
-        async function readEntry(entry, prefix) {
-          if (entry.isFile) {
-            await new Promise((res) => entry.file((file) => {
-              entries.push({ path: prefix + entry.name, name: entry.name, size: file.size, textLoader: () => file.text() });
-              res();
-            }));
-          } else if (entry.isDirectory) {
-            const reader = entry.createReader();
-            await new Promise((res) => {
-              const all = [];
-              const batch = () => reader.readEntries(async (list) => {
-                if (!list.length) {
-                  for (const c of all) await readEntry(c, prefix + entry.name + "/");
-                  res();
-                } else {
-                  all.push(...list);
-                  batch();
-                }
-              });
-              batch();
-            });
-          }
-        }
-        for (const it of items) {
-          const entry = it.webkitGetAsEntry ? it.webkitGetAsEntry() : null;
-          if (entry) await readEntry(entry, "");
-        }
-        if (!entries.length && e.dataTransfer.files) {
-          Array.from(e.dataTransfer.files).forEach((f) => entries.push({ path: f.name, name: f.name, size: f.size, textLoader: () => f.text() }));
-        }
-        if (entries.length) await runAuditEntries(entries, "Dropped Folder");
-      });
-    }
-
-    const genMissingRunBtn = document.getElementById("btn-gen-missing-run");
-    if (genMissingRunBtn) {
-      genMissingRunBtn.addEventListener("click", () => {
-        const auditItems = state.audit.items || {};
-        state.ui.selectedRunSuites = Data.SUITE_METADATA
-          .filter((m) => !(auditItems[m.id] && auditItems[m.id].status === "verified"))
-          .map((m) => m.id);
-        state.ui.previewMode = "outstanding";
-        state.ui.activeTab = "run";
-        persist();
-        renderApp();
-      });
-    }
-
-    const sampleBtn = document.getElementById("btn-load-sample-data");
-    if (sampleBtn) {
-      sampleBtn.addEventListener("click", async () => {
-        const nonSample = (state.results.loadedRecords || []).filter((r) => !r.isSample);
-        state.results.loadedRecords = [...nonSample, ...Data.SAMPLE_RESULTS_DATASET];
-        state.results.includeSampleData = true;
-        persist();
-        await Engine.saveSnapshotIDB("latest_results", state.results.loadedRecords);
-        renderApp();
-      });
-    }
-
-    const resFileInp = document.getElementById("inp-result-files");
-    if (resFileInp) {
-      resFileInp.addEventListener("change", async (e) => {
-        const parsed = [];
-        for (const f of Array.from(e.target.files || [])) {
-          const rec = Engine.parseResultFile(f.name, await f.text());
-          if (rec) parsed.push(rec);
-        }
-        if (parsed.length) {
-          state.results.loadedRecords = [...(state.results.loadedRecords || []), ...parsed];
-          persist();
-          await Engine.saveSnapshotIDB("latest_results", state.results.loadedRecords);
+  function init() {
+    applyThemeAndStealth();
+    renderApp();
+    try {
+      E.loadSnapshotIDB("latest_state").then((snap) => {
+        if (snap && snap.schemaVersion && !localStorage.getItem(E.STORAGE_KEY)) {
+          state = E.loadState();
           renderApp();
         }
       });
-    }
-
-    const toggleChartsBtn = document.getElementById("btn-toggle-charts");
-    if (toggleChartsBtn) {
-      toggleChartsBtn.addEventListener("click", () => {
-        state.ui.showCharts = !state.ui.showCharts;
-        persist();
-        renderApp();
-      });
-    }
-
-    const expMdBtn = document.getElementById("btn-export-md");
-    if (expMdBtn) {
-      expMdBtn.addEventListener("click", () => {
-        downloadFile("ai_benchmate_comparison.md", Engine.exportComparisonMarkdown(state.results.loadedRecords || []), "text/markdown");
-      });
-    }
-
-    const expCsvBtn = document.getElementById("btn-export-csv");
-    if (expCsvBtn) {
-      expCsvBtn.addEventListener("click", () => {
-        downloadFile("ai_benchmate_comparison.csv", Engine.exportComparisonCsv(state.results.loadedRecords || []), "text/csv");
-      });
-    }
-
-    const clearResBtn = document.getElementById("btn-clear-results");
-    if (clearResBtn) {
-      clearResBtn.addEventListener("click", async () => {
-        state.results.loadedRecords = [];
-        state.results.includeSampleData = false;
-        persist();
-        await Engine.saveSnapshotIDB("latest_results", []);
-        renderApp();
-      });
-    }
-
-    // Remote & Setup Tab
-    document.querySelectorAll("[data-ssh-field]").forEach((el) => {
-      const key = el.getAttribute("data-ssh-field");
-      el.addEventListener("input", () => {
-        state.ssh[key] = el.type === "number" ? (Number(el.value) || 22) : el.value;
-        persist();
-        refreshLiveDom();
-      });
-    });
-
-    document.querySelectorAll("[data-remote-sec]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        state.ui.remoteSection = btn.getAttribute("data-remote-sec");
-        persist();
-        renderApp();
-      });
-    });
-
-    const chkVllm = document.getElementById("chk-vllm-restore");
-    if (chkVllm) {
-      chkVllm.addEventListener("change", () => {
-        state.ssh.includeVllmInStartAi = chkVllm.checked;
-        persist();
-        renderApp();
-      });
-    }
-
-    const copyRemoteBtn = document.getElementById("btn-copy-remote-inline");
-    if (copyRemoteBtn) {
-      copyRemoteBtn.addEventListener("click", () => {
-        copyText(copyRemoteBtn, getActiveRemoteCode(), "Copy");
-      });
+    } catch {
+      /* ignore */
     }
   }
 
-  async function init() {
-    applyThemeAndMotion();
-    renderApp();
-    try {
-      const savedAudit = await Engine.loadSnapshotIDB("latest_audit");
-      let updated = false;
-      if (savedAudit && savedAudit.items && Object.keys(state.audit.items || {}).length === 0) {
-        state.audit = savedAudit;
-        updated = true;
-      }
-      const savedResults = await Engine.loadSnapshotIDB("latest_results");
-      if (Array.isArray(savedResults) && savedResults.length && (!state.results.loadedRecords || !state.results.loadedRecords.length)) {
-        state.results.loadedRecords = savedResults;
-        updated = true;
-      }
-      if (updated) renderApp();
-    } catch (_) {}
-  }
-
-  global.BenchmateUI = { init, renderApp };
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init);
   } else {
     init();
   }
-})(window);
+})(typeof window !== "undefined" ? window : globalThis);
