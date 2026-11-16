@@ -1485,7 +1485,7 @@
           `  winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements`,
           `  $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User") + ";C:\\Program Files\\Git\\cmd;C:\\Program Files (x86)\\Git\\cmd;$env:LOCALAPPDATA\\Programs\\Git\\cmd"`,
           `}`,
-          `$pyPaths = @("$env:LOCALAPPDATA\\Programs\\Python\\Python312\\python.exe", "C:\\Program Files\\Python312\\python.exe", "$env:LOCALAPPDATA\\Programs\\Python\\Python311\\python.exe", "C:\\Program Files\\Python311\\python.exe")`,
+          `$pyPaths = @("$env:LOCALAPPDATA\\Programs\\Python\\Python312\\python.exe", "$env:LOCALAPPDATA\\Programs\\Python\\Python312-arm64\\python.exe", "C:\\Program Files\\Python312\\python.exe", "C:\\Program Files\\Python312-arm64\\python.exe", "$env:LOCALAPPDATA\\Programs\\Python\\Python311\\python.exe", "$env:LOCALAPPDATA\\Programs\\Python\\Python311-arm64\\python.exe", "C:\\Program Files\\Python311\\python.exe")`,
           `$foundPy = $pyPaths | Where-Object { Test-Path $_ } | Select-Object -First 1`,
           `if (-not $foundPy) {`,
           `  Write-Host "[+] Installing Python 3.12 (x64) via winget..."`,
@@ -1496,7 +1496,8 @@
           `New-Item -ItemType Directory -Force -Path "${benchRoot}" | Out-Null`,
           `Set-Location "${benchRoot}"`,
           `if (-not (Test-Path "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe")) {`,
-          `  if ($foundPy) { & "$foundPy" -m venv "${benchRoot}\\.venv-aiperf" } elseif (Get-Command py -ErrorAction SilentlyContinue) { py -3.12 -m venv "${benchRoot}\\.venv-aiperf" } else { python -m venv "${benchRoot}\\.venv-aiperf" }`,
+          `  Remove-Item -Recurse -Force "${benchRoot}\\.venv-aiperf" -ErrorAction SilentlyContinue`,
+          `  if ($foundPy) { & "$foundPy" -m venv "${benchRoot}\\.venv-aiperf" } elseif (Get-Command py -ErrorAction SilentlyContinue) { py -3 -m venv "${benchRoot}\\.venv-aiperf" } else { python -m venv "${benchRoot}\\.venv-aiperf" }`,
           `}`,
           `$venvPy = "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe"`,
           `& "$venvPy" -m pip install --upgrade pip setuptools wheel requests tqdm tabulate`,
@@ -1516,9 +1517,11 @@
           `& "$venvPy" -m pip install -e "${benchRoot}\\llmperf"`,
           `& "$venvPy" -m pip install ${aipPkg} llama-benchy`,
           `if (-not (Test-Path "${benchRoot}\\.venv-agentperf\\Scripts\\python.exe")) {`,
-          `  if ($foundPy) { & "$foundPy" -m venv "${benchRoot}\\.venv-agentperf" } elseif (Get-Command py -ErrorAction SilentlyContinue) { py -3.12 -m venv "${benchRoot}\\.venv-agentperf" } else { python -m venv "${benchRoot}\\.venv-agentperf" }`,
+          `  Remove-Item -Recurse -Force "${benchRoot}\\.venv-agentperf" -ErrorAction SilentlyContinue`,
+          `  if ($foundPy) { & "$foundPy" -m venv "${benchRoot}\\.venv-agentperf" } elseif (Test-Path "$venvPy") { & "$venvPy" -m venv "${benchRoot}\\.venv-agentperf" } elseif (Get-Command py -ErrorAction SilentlyContinue) { py -3 -m venv "${benchRoot}\\.venv-agentperf" } else { python -m venv "${benchRoot}\\.venv-agentperf" }`,
           `}`,
-          `& "${benchRoot}\\.venv-agentperf\\Scripts\\python.exe" -m pip install --upgrade pip setuptools wheel agentperf-local`
+          `& "${benchRoot}\\.venv-agentperf\\Scripts\\python.exe" -m pip install --upgrade pip setuptools wheel`,
+          `& "${benchRoot}\\.venv-agentperf\\Scripts\\python.exe" -m pip install agentperf-local`
         ].join("\n")
       });
     } else {
@@ -1534,7 +1537,7 @@
           `  winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements`,
           `  $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User") + ";C:\\Program Files\\Git\\cmd;C:\\Program Files (x86)\\Git\\cmd;$env:LOCALAPPDATA\\Programs\\Git\\cmd"`,
           `}`,
-          `$pyPaths = @("$env:LOCALAPPDATA\\Programs\\Python\\Python312\\python.exe", "C:\\Program Files\\Python312\\python.exe", "$env:LOCALAPPDATA\\Programs\\Python\\Python311\\python.exe", "C:\\Program Files\\Python311\\python.exe")`,
+          `$pyPaths = @("$env:LOCALAPPDATA\\Programs\\Python\\Python312\\python.exe", "$env:LOCALAPPDATA\\Programs\\Python\\Python312-arm64\\python.exe", "C:\\Program Files\\Python312\\python.exe", "C:\\Program Files\\Python312-arm64\\python.exe", "$env:LOCALAPPDATA\\Programs\\Python\\Python311\\python.exe", "$env:LOCALAPPDATA\\Programs\\Python\\Python311-arm64\\python.exe", "C:\\Program Files\\Python311\\python.exe")`,
           `$foundPy = $pyPaths | Where-Object { Test-Path $_ } | Select-Object -First 1`,
           `if (-not $foundPy) {`,
           `  Write-Host "[+] Installing Python 3.12 via winget..."`,
@@ -1545,7 +1548,8 @@
           `New-Item -ItemType Directory -Force -Path "${benchRoot}" | Out-Null`,
           `Set-Location "${benchRoot}"`,
           `if (-not (Test-Path "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe")) {`,
-          `  if ($foundPy) { & "$foundPy" -m venv "${benchRoot}\\.venv-aiperf" } elseif (Get-Command py -ErrorAction SilentlyContinue) { py -3.12 -m venv "${benchRoot}\\.venv-aiperf" } else { python -m venv "${benchRoot}\\.venv-aiperf" }`,
+          `  Remove-Item -Recurse -Force "${benchRoot}\\.venv-aiperf" -ErrorAction SilentlyContinue`,
+          `  if ($foundPy) { & "$foundPy" -m venv "${benchRoot}\\.venv-aiperf" } elseif (Get-Command py -ErrorAction SilentlyContinue) { py -3 -m venv "${benchRoot}\\.venv-aiperf" } else { python -m venv "${benchRoot}\\.venv-aiperf" }`,
           `}`,
           `$venvPy = "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe"`,
           `& "$venvPy" -m pip install --upgrade pip setuptools wheel requests tqdm tabulate`,
@@ -1567,9 +1571,11 @@
           `& "$venvPy" -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('aiperf') else 1)" 2>$null`,
           `if ($LASTEXITCODE -ne 0) { & "$venvPy" -m pip install aiperf llama-benchy }`,
           `if (-not (Test-Path "${benchRoot}\\.venv-agentperf\\Scripts\\python.exe")) {`,
-          `  if ($foundPy) { & "$foundPy" -m venv "${benchRoot}\\.venv-agentperf" } elseif (Get-Command py -ErrorAction SilentlyContinue) { py -3.12 -m venv "${benchRoot}\\.venv-agentperf" } else { python -m venv "${benchRoot}\\.venv-agentperf" }`,
+          `  Remove-Item -Recurse -Force "${benchRoot}\\.venv-agentperf" -ErrorAction SilentlyContinue`,
+          `  if ($foundPy) { & "$foundPy" -m venv "${benchRoot}\\.venv-agentperf" } elseif (Test-Path "$venvPy") { & "$venvPy" -m venv "${benchRoot}\\.venv-agentperf" } elseif (Get-Command py -ErrorAction SilentlyContinue) { py -3 -m venv "${benchRoot}\\.venv-agentperf" } else { python -m venv "${benchRoot}\\.venv-agentperf" }`,
           `}`,
-          `& "${benchRoot}\\.venv-agentperf\\Scripts\\python.exe" -m pip install --upgrade pip setuptools wheel agentperf-local`
+          `& "${benchRoot}\\.venv-agentperf\\Scripts\\python.exe" -m pip install --upgrade pip setuptools wheel`,
+          `& "${benchRoot}\\.venv-agentperf\\Scripts\\python.exe" -m pip install agentperf-local`
         ].join("\n")
       });
     }
