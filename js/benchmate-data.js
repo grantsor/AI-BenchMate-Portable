@@ -503,25 +503,25 @@
       rec: "Default: Server -c 70000 -ctk q8_0 -ctv q8_0 (prevents 65588 > 65536 overflow & 32 GB VRAM OOM) | Client --isl 16384,32768,65536 --osl 1024,1024,1024 (~15-30 min)."
     },
 
-    setup_verify: {
-      title: "01 · Pre-flight Check",
-      desc: "Verifies GPU driver (nvidia-smi / amd-smi), llama-bench & llama-server binaries, speed_bench.py, active .gguf model file & folder scan, Python 3.12 & venv packages (llama_benchy, aiperf, ray, agentperf-local), and port 8080 availability.",
-      rec: "Recommended: Run first before starting any benchmark session."
-    },
     setup_llamacpp: {
-      title: "02 · Install / Build llama.cpp & SPEED-Bench Repo",
-      desc: "Clones https://github.com/ggml-org/llama.cpp (providing tools/server/bench/speed-bench/speed_bench.py) and builds CUDA binaries on DGX Spark or verifies binary paths on Windows.",
-      rec: "Recommended: Run once on a new machine or when Pre-flight reports [MISSING] binaries or speed_bench.py."
+      title: "01 · Install & Verify Git, VC++ Runtime, llama.cpp Binaries & SPEED-Bench",
+      desc: "Automatically installs Git and Microsoft VC++ Redistributable via winget if missing, clones https://github.com/ggml-org/llama.cpp (for speed_bench.py), and automatically downloads & extracts official pre-built llama-bench.exe, llama-server.exe, and CUDA/Vulkan/ROCm runtime DLLs from GitHub Releases (or compiles CUDA binaries on DGX Spark).",
+      rec: "Recommended: Run FIRST on any new machine. Automatically installs and extracts everything needed for Step 01 with zero manual downloads."
     },
     setup_env: {
-      title: "03 · Install Python 3.12, Venvs & Benchmark Dependencies",
-      desc: "Ensures Python 3.12 is installed, creates isolated .venv-aiperf and .venv-agentperf virtual environments, clones & patches llmperf (<3.11 constraint removed), and installs llama-benchy, aiperf, and aa-agentperf-local.",
-      rec: "Recommended: Run once on initial setup or if Pre-flight reports missing venv packages."
+      title: "02 · Install & Verify Python 3.12, Venvs & Benchmark Suites",
+      desc: "Automatically installs Python 3.12 via winget if missing, creates isolated .venv-aiperf and .venv-agentperf virtual environments, clones & patches llmperf (<3.11 constraint removed), and installs llama-benchy, aiperf (with automatic fallback if C++ build tools are absent), and aa-agentperf-local.",
+      rec: "Recommended: Run SECOND on initial setup so all Python benchmark clients and virtual environments are ready."
     },
     setup_models: {
-      title: "04 · Download / Verify Benchmark GGUF Models",
-      desc: "Uses Python's huggingface_hub (hf_hub_download) directly to download Qwen3.8-27B-UD-Q4_K_M.gguf (~15.8 GB) and Qwen3.6-35B-A3B-UD-Q4_K_M.gguf (~21.0 GB) into your Models folder without hf CLI PATH or transformers version errors.",
-      rec: "Recommended: Run if either benchmark .gguf model is not yet on disk."
+      title: "03 · Download & Verify Benchmark GGUF Models",
+      desc: "Checks if Qwen3.8-27B-UD-Q4_K_M.gguf (~15.8 GB) and Qwen3.6-35B-A3B-UD-Q4_K_M.gguf (~21.0 GB) exist on disk and automatically downloads any missing model via huggingface_hub (hf_hub_download) or resumable curl/wget fallback.",
+      rec: "Recommended: Run THIRD to ensure both parity GGUF models are downloaded and verified in your Models directory."
+    },
+    setup_verify: {
+      title: "04 · Complete Pre-Flight Verification & Self-Healing Check",
+      desc: "Verifies GPU driver (nvidia-smi / amd-smi), Git, llama-bench & llama-server binaries, speed_bench.py, active .gguf model files, Python 3.12 venv packages (llama_benchy, aiperf, ray, agentperf-local), clears the llama-benchy Gutenberg cache, and checks port 8080—automatically fixing missing tools on the spot.",
+      rec: "Recommended: Run FOURTH after Cards 01–03 (or before any benchmark session) to confirm 100% readiness."
     },
     setup_cleanup: {
       title: "05 · Free VRAM & Stop Running AI Servers",
