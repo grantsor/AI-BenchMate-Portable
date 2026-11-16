@@ -390,8 +390,8 @@
     const clientModel = getClientModelArg(state);
     const outTarget = getOutputTarget(state, suiteId);
     const venvActivate = isWin
-      ? `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force\n& "${benchRoot}\\.venv-aiperf\\Scripts\\Activate.ps1"`
-      : `source "${benchRoot}/.venv-aiperf/bin/activate"`;
+      ? `$env:Path = "${benchRoot}\\.venv-aiperf\\Scripts;" + [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")\nSet-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force\n& "${benchRoot}\\.venv-aiperf\\Scripts\\Activate.ps1"`
+      : `export PATH="${benchRoot}/.venv-aiperf/bin:$HOME/.local/bin:$PATH"\nsource "${benchRoot}/.venv-aiperf/bin/activate"`;
 
     const mkdirCmd = isWin
       ? `New-Item -ItemType Directory -Force -Path "${resultsDir}" | Out-Null`
@@ -489,8 +489,8 @@
 
     if (suiteId === "agentperf") {
       const agentVenv = isWin
-        ? `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force\n& "${benchRoot}\\.venv-agentperf\\Scripts\\Activate.ps1"`
-        : `source "${benchRoot}/.venv-agentperf/bin/activate"`;
+        ? `$env:Path = "${benchRoot}\\.venv-agentperf\\Scripts;" + [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")\nSet-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force\n& "${benchRoot}\\.venv-agentperf\\Scripts\\Activate.ps1"`
+        : `export PATH="${benchRoot}/.venv-agentperf/bin:$HOME/.local/bin:$PATH"\nsource "${benchRoot}/.venv-agentperf/bin/activate"`;
       const outDirClean = outTarget.fullPath.replace(/[\\/]$/, "");
       const mkdirOut = isWin
         ? `New-Item -ItemType Directory -Force -Path "${outDirClean}" | Out-Null`
@@ -1260,24 +1260,28 @@
     if (isWin) {
       cards.push({
         id: "setup_verify",
-        title: `01 · Pre-flight Check: Verify GPU, Binaries, Model .gguf, Python 3.12 & Venvs (${profile.shortName})`,
+        title: `01 · Pre-flight Check: Verify GPU, Git, Binaries, Model .gguf, Python 3.12 & Venvs (${profile.shortName})`,
         badge: "PRE-FLIGHT",
         cmd: [
           `# Pre-flight Verification — ${profile.name}`,
+          `$env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User") + ";C:\\Program Files\\Git\\cmd;C:\\Program Files (x86)\\Git\\cmd;$env:LOCALAPPDATA\\Programs\\Git\\cmd"`,
           `Write-Host "=== 1. GPU Driver Check ==="`,
-          profile.id === "amd_win_x64" ? `amd-smi` : `nvidia-smi`,
-          `Write-Host "=== 2. Binaries & SPEED-Bench Check ==="`,
-          `@("${binDir}\\llama-bench.exe", "${binDir}\\llama-server.exe", "${repoDir}\\tools\\server\\bench\\speed-bench\\speed_bench.py") | ForEach-Object { if (Test-Path $_) { Write-Host "[OK] $_" } else { Write-Host "[MISSING] $_" } }`,
+          profile.id === "amd_win_x64"
+            ? `if (Get-Command amd-smi -ErrorAction SilentlyContinue) { amd-smi } else { Write-Host "[INFO] amd-smi CLI not in PATH (check Task Manager GPU tab)" }`
+            : `if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) { nvidia-smi } else { Write-Host "[MISSING] nvidia-smi not found in PATH" }`,
+          `Write-Host "=== 2. Git, Binaries & SPEED-Bench Check ==="`,
+          `if (Get-Command git -ErrorAction SilentlyContinue) { Write-Host "[OK] $(git --version)" } else { Write-Host "[MISSING] git (Run Card 02 to install automatically)" }`,
+          `@("${binDir}\\llama-bench.exe", "${binDir}\\llama-server.exe", "${repoDir}\\tools\\server\\bench\\speed-bench\\speed_bench.py") | ForEach-Object { if (Test-Path $_) { Write-Host "[OK] $_" } else { Write-Host "[MISSING] $_ (Run Card 02 to install automatically)" } }`,
           `Write-Host "=== 3. Active GGUF Model & Models Directory ==="`,
-          `if (Test-Path "${modelPath}") { Write-Host "[OK] Active model found: ${modelPath}" } else { Write-Host "[MISSING] Active model not found: ${modelPath}" }`,
+          `if (Test-Path "${modelPath}") { Write-Host "[OK] Active model found: ${modelPath}" } else { Write-Host "[MISSING] Active model not found: ${modelPath} (Run Card 04 to download)" }`,
           `Get-ChildItem -Path "${modelDir}" -Filter "*.gguf" -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ("  {0} ({1} GB)" -f $_.FullName, [math]::Round($_.Length / 1GB, 2)) }`,
           `Write-Host "=== 4. Installed Python Versions, Venvs & Packages ==="`,
-          `py -0p`,
+          `if (Get-Command py -ErrorAction SilentlyContinue) { py -0p } elseif (Get-Command python -ErrorAction SilentlyContinue) { python --version } else { Write-Host "[MISSING] Python 3.12 not installed yet (Run Card 03 to install automatically)" }`,
           `if (Test-Path "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe") {`,
           `  & "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe" -c "import sys, importlib.util; print('venv Python:', sys.version.split()[0]); [print('[OK]' if importlib.util.find_spec(m) else '[MISSING]', m) for m in ('llama_benchy','aiperf','ray')]"`,
-          `} else { Write-Host "[MISSING] ${benchRoot}\\.venv-aiperf" }`,
-          `if (Test-Path "${benchRoot}\\llmperf\\token_benchmark_ray.py") { Write-Host "[OK] token_benchmark_ray.py" } else { Write-Host "[MISSING] llmperf repo" }`,
-          `if (Test-Path "${benchRoot}\\.venv-agentperf\\Scripts\\agentperf-local.exe") { Write-Host "[OK] agentperf-local" } else { Write-Host "[MISSING] ${benchRoot}\\.venv-agentperf (agentperf-local)" }`,
+          `} else { Write-Host "[MISSING] ${benchRoot}\\.venv-aiperf (Run Card 03 to create)" }`,
+          `if (Test-Path "${benchRoot}\\llmperf\\token_benchmark_ray.py") { Write-Host "[OK] token_benchmark_ray.py" } else { Write-Host "[MISSING] llmperf repo (Run Card 03 to install)" }`,
+          `if (Test-Path "${benchRoot}\\.venv-agentperf\\Scripts\\agentperf-local.exe") { Write-Host "[OK] agentperf-local" } else { Write-Host "[MISSING] ${benchRoot}\\.venv-agentperf (Run Card 03 to create)" }`,
           `Write-Host "=== 5. Port ${port} Availability ==="`,
           `Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue`
         ].join("\n")
@@ -1285,22 +1289,24 @@
     } else {
       cards.push({
         id: "setup_verify",
-        title: `01 · Pre-flight Check: Verify GPU, Binaries, Model .gguf, Python 3.12 & Venvs (${profile.shortName})`,
+        title: `01 · Pre-flight Check: Verify GPU, Git, Binaries, Model .gguf, Python 3.12 & Venvs (${profile.shortName})`,
         badge: "PRE-FLIGHT",
         cmd: [
           `# Pre-flight Verification — ${profile.name}`,
+          `export PATH="/usr/local/cuda/bin:$HOME/.local/bin:$PATH"`,
           `echo "=== 1. GPU Driver Check ===" && nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv,noheader`,
-          `echo "=== 2. Binaries & SPEED-Bench Check ==="`,
-          `for f in "${binDir}/llama-bench" "${binDir}/llama-server" "${repoDir}/tools/server/bench/speed-bench/speed_bench.py"; do test -e "$f" && echo "[OK] $f" || echo "[MISSING] $f"; done`,
+          `echo "=== 2. Git, Binaries & SPEED-Bench Check ==="`,
+          `command -v git >/dev/null 2>&1 && echo "[OK] $(git --version)" || echo "[MISSING] git (Run Card 02)"`,
+          `for f in "${binDir}/llama-bench" "${binDir}/llama-server" "${repoDir}/tools/server/bench/speed-bench/speed_bench.py"; do test -e "$f" && echo "[OK] $f" || echo "[MISSING] $f (Run Card 02)"; done`,
           `echo "=== 3. Active GGUF Model & Models Directory ==="`,
-          `test -f "${modelPath}" && ls -lh "${modelPath}" || echo "[MISSING] Active model not found: ${modelPath}"`,
+          `test -f "${modelPath}" && ls -lh "${modelPath}" || echo "[MISSING] Active model not found: ${modelPath} (Run Card 04)"`,
           `find "${modelDir}" -maxdepth 3 -name "*.gguf" -exec ls -lh {} + 2>/dev/null || true`,
           `echo "=== 4. Python, Venvs & Packages ==="`,
           `python3 --version`,
           `if [ ! -e "${benchRoot}/.venv-aiperf" ] && [ -d "$HOME/.venv-aiperf" ]; then ln -sfn "$HOME/.venv-aiperf" "${benchRoot}/.venv-aiperf"; fi`,
-          `if [ -x "${benchRoot}/.venv-aiperf/bin/python3" ]; then "${benchRoot}/.venv-aiperf/bin/python3" -c "import importlib.util; [print('[OK]' if importlib.util.find_spec(m) else '[MISSING]', m) for m in ('llama_benchy','aiperf','ray')]"; else echo "[MISSING] ${benchRoot}/.venv-aiperf"; fi`,
-          `test -f "${benchRoot}/llmperf/token_benchmark_ray.py" && echo "[OK] token_benchmark_ray.py" || echo "[MISSING] llmperf repo"`,
-          `test -x "${benchRoot}/.venv-agentperf/bin/agentperf-local" && echo "[OK] agentperf-local" || echo "[MISSING] ${benchRoot}/.venv-agentperf (agentperf-local)"`,
+          `if [ -x "${benchRoot}/.venv-aiperf/bin/python3" ]; then "${benchRoot}/.venv-aiperf/bin/python3" -c "import importlib.util; [print('[OK]' if importlib.util.find_spec(m) else '[MISSING]', m) for m in ('llama_benchy','aiperf','ray')]"; else echo "[MISSING] ${benchRoot}/.venv-aiperf (Run Card 03)"; fi`,
+          `test -f "${benchRoot}/llmperf/token_benchmark_ray.py" && echo "[OK] token_benchmark_ray.py" || echo "[MISSING] llmperf repo (Run Card 03)"`,
+          `test -x "${benchRoot}/.venv-agentperf/bin/agentperf-local" && echo "[OK] agentperf-local" || echo "[MISSING] ${benchRoot}/.venv-agentperf (Run Card 03)"`,
           `echo "=== 5. Port ${port} Availability ==="`,
           `ss -tulpn | grep ":${port} " || echo "[OK] Port ${port} is free"`
         ].join("\n")
@@ -1313,8 +1319,9 @@
         title: "02 · Install / Build llama.cpp CUDA Binaries & SPEED-Bench Repo (DGX Spark ARM64)",
         badge: "LLAMA.CPP",
         cmd: [
-          `sudo apt update && sudo apt install -y build-essential cmake git libcurl4-openssl-dev`,
-          `if [ ! -d "${repoDir}" ]; then git clone https://github.com/ggml-org/llama.cpp.git "${repoDir}"; fi`,
+          `export PATH="/usr/local/cuda/bin:$HOME/.local/bin:$PATH"`,
+          `sudo apt update && sudo apt install -y build-essential cmake git curl wget libcurl4-openssl-dev`,
+          `if [ ! -d "${repoDir}/.git" ]; then rm -rf "${repoDir}"; git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "${repoDir}"; fi`,
           `cd "${repoDir}"`,
           `cmake -B build -DGGML_CUDA=ON`,
           `cmake --build build --config Release -j "$(nproc)"`,
@@ -1322,16 +1329,65 @@
         ].join("\n")
       });
     } else {
+      const assetRegex =
+        profile.id === "rtx_spark_win_arm64"
+          ? "^(llama-.*-bin-win-cuda-.*-arm64|cudart-llama-bin-win-cuda-.*-arm64)\\.zip$"
+          : profile.id === "nvidia_win_x64"
+            ? "^(llama-.*-bin-win-cuda-13.*-x64|cudart-llama-bin-win-cuda-13.*-x64)\\.zip$"
+            : state.hardware.amdBackend === "rocm"
+              ? "^llama-.*-bin-win-rocm-.*-x64\\.zip$"
+              : "^llama-.*-bin-win-vulkan-x64\\.zip$";
+      const vcRedistCmd =
+        profile.id === "rtx_spark_win_arm64"
+          ? `winget install --id Microsoft.VCRedist.2015+.arm64 -e --source winget --accept-package-agreements --accept-source-agreements 2>$null; winget install --id Microsoft.VCRedist.2015+.x64 -e --source winget --accept-package-agreements --accept-source-agreements 2>$null`
+          : `winget install --id Microsoft.VCRedist.2015+.x64 -e --source winget --accept-package-agreements --accept-source-agreements 2>$null`;
       cards.push({
         id: "setup_llamacpp",
-        title: `02 · Clone llama.cpp Repo (for SPEED-Bench) & Verify Binaries (${profile.shortName})`,
+        title: `02 · Install Git & VC++ Runtime, Clone llama.cpp Repo & Download Pre-Built Binaries (${profile.shortName})`,
         badge: "LLAMA.CPP",
         cmd: [
-          `# Clone llama.cpp repository so tools\\server\\bench\\speed-bench\\speed_bench.py is present`,
-          `if (-not (Test-Path "${repoDir}")) { git clone https://github.com/ggml-org/llama.cpp.git "${repoDir}" }`,
+          `# 1. Refresh PATH & automatically install Git + VC++ Runtime via winget if missing`,
+          `$env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User") + ";C:\\Program Files\\Git\\cmd;C:\\Program Files (x86)\\Git\\cmd;$env:LOCALAPPDATA\\Programs\\Git\\cmd"`,
+          `if (-not (Get-Command git -ErrorAction SilentlyContinue)) {`,
+          `  Write-Host "[+] Installing Git via winget..."`,
+          `  winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements`,
+          `  $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User") + ";C:\\Program Files\\Git\\cmd;C:\\Program Files (x86)\\Git\\cmd;$env:LOCALAPPDATA\\Programs\\Git\\cmd"`,
+          `}`,
+          `if (-not (Test-Path "$env:SystemRoot\\System32\\vcruntime140.dll")) {`,
+          `  Write-Host "[+] Installing Microsoft VC++ Redistributable..."`,
+          `  ${vcRedistCmd}`,
+          `}`,
+          `# 2. Clone llama.cpp repository (with automatic HTTPS ZIP fallback if git is unavailable) for speed_bench.py`,
+          `if (-not (Test-Path "${repoDir}\\tools\\server\\bench\\speed-bench\\speed_bench.py")) {`,
+          `  if (Get-Command git -ErrorAction SilentlyContinue) {`,
+          `    git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "${repoDir}"`,
+          `  } else {`,
+          `    Write-Host "[+] Downloading llama.cpp repository archive via HTTPS..."`,
+          `    curl.exe -L "https://github.com/ggml-org/llama.cpp/archive/refs/heads/master.zip" -o "$env:TEMP\\llamacpp_repo.zip"`,
+          `    Remove-Item -Recurse -Force "$env:TEMP\\llamacpp_repo_ext" -ErrorAction SilentlyContinue`,
+          `    Expand-Archive -Path "$env:TEMP\\llamacpp_repo.zip" -DestinationPath "$env:TEMP\\llamacpp_repo_ext" -Force`,
+          `    New-Item -ItemType Directory -Force -Path "${repoDir}" | Out-Null`,
+          `    Copy-Item -Path "$env:TEMP\\llamacpp_repo_ext\\llama.cpp-master\\*" -Destination "${repoDir}" -Recurse -Force`,
+          `  }`,
+          `}`,
+          `# 3. Automatically download & extract official pre-built llama-bench.exe, llama-server.exe & runtime DLLs`,
           `New-Item -ItemType Directory -Force -Path "${binDir}" | Out-Null`,
+          `if (-not ((Test-Path "${binDir}\\llama-bench.exe") -and (Test-Path "${binDir}\\llama-server.exe"))) {`,
+          `  Write-Host "[+] Downloading latest official llama.cpp release binaries for ${profile.shortName}..."`,
+          `  $rel = (Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=1")[0]`,
+          `  $assets = $rel.assets | Where-Object { $_.name -match "${assetRegex}" }`,
+          `  foreach ($a in $assets) {`,
+          `    $zipFile = "$env:TEMP\\$($a.name)"`,
+          `    $extDir = "$env:TEMP\\llama_ext_$($a.id)"`,
+          `    Write-Host "[+] Fetching $($a.name) ($([math]::Round($a.size / 1MB, 1)) MB)..."`,
+          `    curl.exe -L "$($a.browser_download_url)" -o "$zipFile"`,
+          `    Remove-Item -Recurse -Force "$extDir" -ErrorAction SilentlyContinue`,
+          `    Expand-Archive -Path "$zipFile" -DestinationPath "$extDir" -Force`,
+          `    Get-ChildItem -Path "$extDir" -Recurse -File | Copy-Item -Destination "${binDir}" -Force`,
+          `  }`,
+          `}`,
           `@("${binDir}\\llama-bench.exe", "${binDir}\\llama-server.exe", "${repoDir}\\tools\\server\\bench\\speed-bench\\speed_bench.py") | ForEach-Object {`,
-          `  if (Test-Path $_) { Write-Host "[READY] $_" } else { Write-Host "[ACTION NEEDED] Missing $_ — extract llama.cpp release into ${binDir}" }`,
+          `  if (Test-Path $_) { Write-Host "[READY] $_" } else { Write-Host "[MISSING] $_" }`,
           `}`
         ].join("\n")
       });
@@ -1344,15 +1400,16 @@
         title: "03 · Install Python Venvs & Benchmark Dependencies (DGX Spark ARM64)",
         badge: "AARCH64 SETUP",
         cmd: [
+          `export PATH="$HOME/.local/bin:$PATH"`,
           state.hardware.nonSudoSetup
             ? `# Non-sudo fallback (skips crick C extension compilation)`
-            : `sudo apt update && sudo apt install -y python3-dev python3.12-dev python3-venv build-essential cmake git`,
+            : `sudo apt update && sudo apt install -y python3-dev python3.12-dev python3-venv python3-pip build-essential cmake git curl wget`,
           `mkdir -p "${benchRoot}"`,
           `cd "${benchRoot}"`,
           `python3 -m venv "${benchRoot}/.venv-aiperf"`,
           `source "${benchRoot}/.venv-aiperf/bin/activate"`,
-          `pip install --upgrade pip setuptools wheel`,
-          `if [ ! -d "${benchRoot}/llmperf" ]; then git clone https://github.com/ray-project/llmperf.git "${benchRoot}/llmperf"; fi`,
+          `pip install --upgrade pip setuptools wheel requests tqdm tabulate huggingface_hub`,
+          `if [ ! -f "${benchRoot}/llmperf/token_benchmark_ray.py" ]; then rm -rf "${benchRoot}/llmperf"; git clone https://github.com/ray-project/llmperf.git "${benchRoot}/llmperf"; fi`,
           `if [ -f "${benchRoot}/llmperf/pyproject.toml" ]; then sed -i 's/<3.11,\\s*//g; s/,\\s*<3.11//g' "${benchRoot}/llmperf/pyproject.toml"; fi`,
           `if [ -f "${benchRoot}/llmperf/setup.py" ]; then sed -i 's/<3.11,\\s*//g; s/,\\s*<3.11//g' "${benchRoot}/llmperf/setup.py"; fi`,
           `pip install -e "${benchRoot}/llmperf"`,
@@ -1369,22 +1426,42 @@
         title: "03 · Install Python 3.12, Venvs & Benchmark Dependencies (Windows ARM64)",
         badge: "WIN ARM64 SETUP",
         cmd: [
-          `# Install Python 3.12 x64 (recommended on Win-ARM64 so ray/llmperf & aiperf PyPI wheels install without C++ compilation errors)`,
-          `if (-not (py -3.12 --version 2>$null)) { winget install -e --id Python.Python.3.12 --architecture x64 --accept-package-agreements --accept-source-agreements }`,
-          `$pyCmd = if (py -3.12 --version 2>$null) { "py -3.12" } elseif (py -3.11 --version 2>$null) { "py -3.11" } else { "py" }`,
+          `# 1. Refresh PATH & install Git + Python 3.12 x64 (required on Win-ARM64 so ray/llmperf & aiperf pre-built wheels install without C++ compiler errors)`,
+          `$env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User") + ";C:\\Program Files\\Git\\cmd;C:\\Program Files (x86)\\Git\\cmd;$env:LOCALAPPDATA\\Programs\\Git\\cmd"`,
+          `if (-not (Get-Command git -ErrorAction SilentlyContinue)) {`,
+          `  winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements`,
+          `  $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User") + ";C:\\Program Files\\Git\\cmd;C:\\Program Files (x86)\\Git\\cmd;$env:LOCALAPPDATA\\Programs\\Git\\cmd"`,
+          `}`,
+          `$pyPaths = @("$env:LOCALAPPDATA\\Programs\\Python\\Python312\\python.exe", "C:\\Program Files\\Python312\\python.exe", "$env:LOCALAPPDATA\\Programs\\Python\\Python311\\python.exe", "C:\\Program Files\\Python311\\python.exe")`,
+          `$foundPy = $pyPaths | Where-Object { Test-Path $_ } | Select-Object -First 1`,
+          `if (-not $foundPy) {`,
+          `  Write-Host "[+] Installing Python 3.12 (x64) via winget..."`,
+          `  winget install -e --id Python.Python.3.12 --architecture x64 --source winget --accept-package-agreements --accept-source-agreements`,
+          `  $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User") + ";C:\\Program Files\\Git\\cmd;C:\\Program Files (x86)\\Git\\cmd;$env:LOCALAPPDATA\\Programs\\Git\\cmd"`,
+          `  $foundPy = $pyPaths | Where-Object { Test-Path $_ } | Select-Object -First 1`,
+          `}`,
           `New-Item -ItemType Directory -Force -Path "${benchRoot}" | Out-Null`,
           `Set-Location "${benchRoot}"`,
-          `Invoke-Expression "$pyCmd -m venv '${benchRoot}\\.venv-aiperf'"`,
-          `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force`,
-          `& "${benchRoot}\\.venv-aiperf\\Scripts\\Activate.ps1"`,
-          `python -m pip install --upgrade pip setuptools wheel`,
-          `if (-not (Test-Path "${benchRoot}\\llmperf")) { git clone https://github.com/ray-project/llmperf.git "${benchRoot}\\llmperf" }`,
+          `if ($foundPy) { & "$foundPy" -m venv "${benchRoot}\\.venv-aiperf" } elseif (Get-Command py -ErrorAction SilentlyContinue) { py -3.12 -m venv "${benchRoot}\\.venv-aiperf" } else { python -m venv "${benchRoot}\\.venv-aiperf" }`,
+          `$venvPy = "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe"`,
+          `& "$venvPy" -m pip install --upgrade pip setuptools wheel requests tqdm tabulate huggingface_hub`,
+          `if (-not (Test-Path "${benchRoot}\\llmperf\\token_benchmark_ray.py")) {`,
+          `  if (Get-Command git -ErrorAction SilentlyContinue) {`,
+          `    git clone https://github.com/ray-project/llmperf.git "${benchRoot}\\llmperf"`,
+          `  } else {`,
+          `    curl.exe -L "https://github.com/ray-project/llmperf/archive/refs/heads/main.zip" -o "$env:TEMP\\llmperf.zip"`,
+          `    Remove-Item -Recurse -Force "$env:TEMP\\llmperf_ext" -ErrorAction SilentlyContinue`,
+          `    Expand-Archive -Path "$env:TEMP\\llmperf.zip" -DestinationPath "$env:TEMP\\llmperf_ext" -Force`,
+          `    New-Item -ItemType Directory -Force -Path "${benchRoot}\\llmperf" | Out-Null`,
+          `    Copy-Item -Path "$env:TEMP\\llmperf_ext\\llmperf-main\\*" -Destination "${benchRoot}\\llmperf" -Recurse -Force`,
+          `  }`,
+          `}`,
           `if (Test-Path "${benchRoot}\\llmperf\\pyproject.toml") { (Get-Content "${benchRoot}\\llmperf\\pyproject.toml") -replace '<3\\.11,?\\s*|,\\s*<3\\.11', '' | Set-Content "${benchRoot}\\llmperf\\pyproject.toml" }`,
           `if (Test-Path "${benchRoot}\\llmperf\\setup.py") { (Get-Content "${benchRoot}\\llmperf\\setup.py") -replace '<3\\.11,?\\s*|,\\s*<3\\.11', '' | Set-Content "${benchRoot}\\llmperf\\setup.py" }`,
-          `pip install -e "${benchRoot}\\llmperf"`,
-          `pip install ${aipPkg} llama-benchy`,
-          `Invoke-Expression "$pyCmd -m venv '${benchRoot}\\.venv-agentperf'"`,
-          `& "${benchRoot}\\.venv-agentperf\\Scripts\\pip.exe" install --upgrade pip setuptools wheel aa-agentperf-local`
+          `& "$venvPy" -m pip install -e "${benchRoot}\\llmperf"`,
+          `& "$venvPy" -m pip install ${aipPkg} llama-benchy`,
+          `if ($foundPy) { & "$foundPy" -m venv "${benchRoot}\\.venv-agentperf" } elseif (Get-Command py -ErrorAction SilentlyContinue) { py -3.12 -m venv "${benchRoot}\\.venv-agentperf" } else { python -m venv "${benchRoot}\\.venv-agentperf" }`,
+          `& "${benchRoot}\\.venv-agentperf\\Scripts\\python.exe" -m pip install --upgrade pip setuptools wheel aa-agentperf-local`
         ].join("\n")
       });
     } else {
@@ -1393,22 +1470,42 @@
         title: `03 · Install Python 3.12, Venvs & Benchmark Dependencies (${profile.shortName})`,
         badge: "WIN X64 SETUP",
         cmd: [
-          `# Ensure Python 3.12 is installed (ray/llmperf & aiperf require Python 3.11/3.12 wheels; Python 3.13+ lacks ray wheels)`,
-          `if (-not (py -3.12 --version 2>$null)) { winget install -e --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements }`,
-          `$pyCmd = if (py -3.12 --version 2>$null) { "py -3.12" } elseif (py -3.11 --version 2>$null) { "py -3.11" } else { "py" }`,
+          `# 1. Refresh PATH & ensure Git + Python 3.12 are installed (ray/llmperf & aiperf require Python 3.11/3.12 wheels)`,
+          `$env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User") + ";C:\\Program Files\\Git\\cmd;C:\\Program Files (x86)\\Git\\cmd;$env:LOCALAPPDATA\\Programs\\Git\\cmd"`,
+          `if (-not (Get-Command git -ErrorAction SilentlyContinue)) {`,
+          `  winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements`,
+          `  $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User") + ";C:\\Program Files\\Git\\cmd;C:\\Program Files (x86)\\Git\\cmd;$env:LOCALAPPDATA\\Programs\\Git\\cmd"`,
+          `}`,
+          `$pyPaths = @("$env:LOCALAPPDATA\\Programs\\Python\\Python312\\python.exe", "C:\\Program Files\\Python312\\python.exe", "$env:LOCALAPPDATA\\Programs\\Python\\Python311\\python.exe", "C:\\Program Files\\Python311\\python.exe")`,
+          `$foundPy = $pyPaths | Where-Object { Test-Path $_ } | Select-Object -First 1`,
+          `if (-not $foundPy) {`,
+          `  Write-Host "[+] Installing Python 3.12 via winget..."`,
+          `  winget install -e --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements`,
+          `  $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User") + ";C:\\Program Files\\Git\\cmd;C:\\Program Files (x86)\\Git\\cmd;$env:LOCALAPPDATA\\Programs\\Git\\cmd"`,
+          `  $foundPy = $pyPaths | Where-Object { Test-Path $_ } | Select-Object -First 1`,
+          `}`,
           `New-Item -ItemType Directory -Force -Path "${benchRoot}" | Out-Null`,
           `Set-Location "${benchRoot}"`,
-          `Invoke-Expression "$pyCmd -m venv '${benchRoot}\\.venv-aiperf'"`,
-          `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force`,
-          `& "${benchRoot}\\.venv-aiperf\\Scripts\\Activate.ps1"`,
-          `python -m pip install --upgrade pip setuptools wheel`,
-          `if (-not (Test-Path "${benchRoot}\\llmperf")) { git clone https://github.com/ray-project/llmperf.git "${benchRoot}\\llmperf" }`,
+          `if ($foundPy) { & "$foundPy" -m venv "${benchRoot}\\.venv-aiperf" } elseif (Get-Command py -ErrorAction SilentlyContinue) { py -3.12 -m venv "${benchRoot}\\.venv-aiperf" } else { python -m venv "${benchRoot}\\.venv-aiperf" }`,
+          `$venvPy = "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe"`,
+          `& "$venvPy" -m pip install --upgrade pip setuptools wheel requests tqdm tabulate huggingface_hub`,
+          `if (-not (Test-Path "${benchRoot}\\llmperf\\token_benchmark_ray.py")) {`,
+          `  if (Get-Command git -ErrorAction SilentlyContinue) {`,
+          `    git clone https://github.com/ray-project/llmperf.git "${benchRoot}\\llmperf"`,
+          `  } else {`,
+          `    curl.exe -L "https://github.com/ray-project/llmperf/archive/refs/heads/main.zip" -o "$env:TEMP\\llmperf.zip"`,
+          `    Remove-Item -Recurse -Force "$env:TEMP\\llmperf_ext" -ErrorAction SilentlyContinue`,
+          `    Expand-Archive -Path "$env:TEMP\\llmperf.zip" -DestinationPath "$env:TEMP\\llmperf_ext" -Force`,
+          `    New-Item -ItemType Directory -Force -Path "${benchRoot}\\llmperf" | Out-Null`,
+          `    Copy-Item -Path "$env:TEMP\\llmperf_ext\\llmperf-main\\*" -Destination "${benchRoot}\\llmperf" -Recurse -Force`,
+          `  }`,
+          `}`,
           `if (Test-Path "${benchRoot}\\llmperf\\pyproject.toml") { (Get-Content "${benchRoot}\\llmperf\\pyproject.toml") -replace '<3\\.11,?\\s*|,\\s*<3\\.11', '' | Set-Content "${benchRoot}\\llmperf\\pyproject.toml" }`,
           `if (Test-Path "${benchRoot}\\llmperf\\setup.py") { (Get-Content "${benchRoot}\\llmperf\\setup.py") -replace '<3\\.11,?\\s*|,\\s*<3\\.11', '' | Set-Content "${benchRoot}\\llmperf\\setup.py" }`,
-          `pip install -e "${benchRoot}\\llmperf"`,
-          `pip install "aiperf[tdigest]" llama-benchy`,
-          `Invoke-Expression "$pyCmd -m venv '${benchRoot}\\.venv-agentperf'"`,
-          `& "${benchRoot}\\.venv-agentperf\\Scripts\\pip.exe" install --upgrade pip setuptools wheel aa-agentperf-local`
+          `& "$venvPy" -m pip install -e "${benchRoot}\\llmperf"`,
+          `& "$venvPy" -m pip install "aiperf[tdigest]" llama-benchy`,
+          `if ($foundPy) { & "$foundPy" -m venv "${benchRoot}\\.venv-agentperf" } elseif (Get-Command py -ErrorAction SilentlyContinue) { py -3.12 -m venv "${benchRoot}\\.venv-agentperf" } else { python -m venv "${benchRoot}\\.venv-agentperf" }`,
+          `& "${benchRoot}\\.venv-agentperf\\Scripts\\python.exe" -m pip install --upgrade pip setuptools wheel aa-agentperf-local`
         ].join("\n")
       });
     }
@@ -1419,9 +1516,17 @@
         title: `04 · Download / Verify Benchmark GGUF Models (Qwen3.8-27B & Qwen3.6-35B-A3B)`,
         badge: "MODELS",
         cmd: [
-          `# Conflict-free Python downloader (bypasses hf CLI PATH & transformers version conflicts)`,
-          `& "${benchRoot}\\.venv-aiperf\\Scripts\\pip.exe" install -U huggingface_hub`,
-          `& "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe" -c "from huggingface_hub import hf_hub_download; hf_hub_download('unsloth/Qwen3.8-27B-GGUF', 'Qwen3.8-27B-UD-Q4_K_M.gguf', local_dir=r'${modelDir}\\unsloth\\Qwen3.8-27B-GGUF'); hf_hub_download('unsloth/Qwen3.6-35B-A3B-GGUF', 'Qwen3.6-35B-A3B-UD-Q4_K_M.gguf', local_dir=r'${modelDir}\\unsloth\\Qwen3.6-35B-A3B-GGUF')"`,
+          `# Conflict-free GGUF Model Downloader (uses huggingface_hub or direct resumable curl.exe fallback)`,
+          `$q38Dir = "${modelDir}\\unsloth\\Qwen3.8-27B-GGUF"`,
+          `$q36Dir = "${modelDir}\\unsloth\\Qwen3.6-35B-A3B-GGUF"`,
+          `New-Item -ItemType Directory -Force -Path $q38Dir, $q36Dir | Out-Null`,
+          `if (Test-Path "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe") {`,
+          `  & "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe" -m pip install -U huggingface_hub`,
+          `  & "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe" -c "from huggingface_hub import hf_hub_download; hf_hub_download('unsloth/Qwen3.8-27B-GGUF', 'Qwen3.8-27B-UD-Q4_K_M.gguf', local_dir=r'$q38Dir'); hf_hub_download('unsloth/Qwen3.6-35B-A3B-GGUF', 'Qwen3.6-35B-A3B-UD-Q4_K_M.gguf', local_dir=r'$q36Dir')"`,
+          `} else {`,
+          `  curl.exe -L -C - "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q4_K_M.gguf" -o "$q38Dir\\Qwen3.8-27B-UD-Q4_K_M.gguf"`,
+          `  curl.exe -L -C - "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf" -o "$q36Dir\\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"`,
+          `}`,
           `Get-ChildItem -Path "${modelDir}" -Filter "*.gguf" -Recurse | Select-Object FullName, @{Name="SizeGB";Expression={[math]::Round($_.Length/1GB,2)}}`
         ].join("\n")
       });
@@ -1431,10 +1536,15 @@
         title: `04 · Download / Verify Benchmark GGUF Models (Qwen3.8-27B & Qwen3.6-35B-A3B)`,
         badge: "MODELS",
         cmd: [
-          `# Conflict-free Python downloader (bypasses hf CLI PATH & transformers version conflicts)`,
+          `# Conflict-free GGUF Model Downloader (uses huggingface_hub or resumable wget fallback)`,
           `mkdir -p "${modelDir}"`,
-          `"${benchRoot}/.venv-aiperf/bin/pip" install -U huggingface_hub`,
-          `"${benchRoot}/.venv-aiperf/bin/python3" -c "from huggingface_hub import hf_hub_download; hf_hub_download('unsloth/Qwen3.8-27B-GGUF', 'Qwen3.8-27B-UD-Q4_K_M.gguf', local_dir='${modelDir}'); hf_hub_download('unsloth/Qwen3.6-35B-A3B-GGUF', 'Qwen3.6-35B-A3B-UD-Q4_K_M.gguf', local_dir='${modelDir}')"`,
+          `if [ -x "${benchRoot}/.venv-aiperf/bin/python3" ]; then`,
+          `  "${benchRoot}/.venv-aiperf/bin/pip" install -U huggingface_hub`,
+          `  "${benchRoot}/.venv-aiperf/bin/python3" -c "from huggingface_hub import hf_hub_download; hf_hub_download('unsloth/Qwen3.8-27B-GGUF', 'Qwen3.8-27B-UD-Q4_K_M.gguf', local_dir='${modelDir}'); hf_hub_download('unsloth/Qwen3.6-35B-A3B-GGUF', 'Qwen3.6-35B-A3B-UD-Q4_K_M.gguf', local_dir='${modelDir}')"`,
+          `else`,
+          `  wget -c "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q4_K_M.gguf" -O "${modelDir}/Qwen3.8-27B-UD-Q4_K_M.gguf"`,
+          `  wget -c "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf" -O "${modelDir}/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"`,
+          `fi`,
           `ls -lh "${modelDir}"/*.gguf`
         ].join("\n")
       });
