@@ -387,7 +387,16 @@
     }
     if (suiteId === "speed_bench") {
       const presetVal = ["16384", "32768", "65536"].includes(String(s.c)) ? String(s.c) : "custom";
-      return `<div class="sb-form-grid">${
+      const slug = state.model.slug || "qwen38";
+      const isDenseVsMoe = s.compareBaselineFile === "speedbench_qwen38.json" && s.compareSpeculativeFile === "speedbench_qwen36.json";
+      const isStdVs64k = s.compareBaselineFile === `speedbench_${slug}.json` && s.compareSpeculativeFile === `speedbench_${slug}_ctx64k.json`;
+      return `
+        <div class="sb-inline-row" style="margin-bottom:10px">
+          <span style="font-size:12px;font-weight:600;color:var(--text-secondary)">Comparator Preset:</span>
+          <button type="button" class="sb-chip ${isDenseVsMoe ? "active" : ""}" data-speedbench-cmp="dense_vs_moe">Dense vs MoE (qwen38 vs qwen36)</button>
+          <button type="button" class="sb-chip ${isStdVs64k ? "active" : ""}" data-speedbench-cmp="std_vs_64k">Standard vs 64K (${esc(slug)} vs ${esc(slug)}_ctx64k)</button>
+        </div>
+        <div class="sb-form-grid">${
         renderFieldSelect(suiteId, "contextPreset", "Context Quick Select", presetVal, [
           { value: "16384", label: "16K (16384)" },
           { value: "32768", label: "32K (32768)" },
@@ -1161,6 +1170,20 @@
         lp.stddevInput = 128;
         lp.meanOutput = 256;
         lp.stddevOutput = 32;
+      }
+      persistState();
+      renderApp();
+      return;
+    }
+    if (t.dataset.speedbenchCmp) {
+      const sb = state.suites.speed_bench;
+      const slug = state.model.slug || "qwen38";
+      if (t.dataset.speedbenchCmp === "std_vs_64k") {
+        sb.compareBaselineFile = `speedbench_${slug}.json`;
+        sb.compareSpeculativeFile = `speedbench_${slug}_ctx64k.json`;
+      } else {
+        sb.compareBaselineFile = "speedbench_qwen38.json";
+        sb.compareSpeculativeFile = "speedbench_qwen36.json";
       }
       persistState();
       renderApp();

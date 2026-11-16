@@ -251,7 +251,7 @@
           isDir = true;
           break;
         case "speed_bench":
-          leaf = `speedbench_${slug}.json`;
+          leaf = Number(s.c) >= 65536 ? `speedbench_${slug}_ctx64k.json` : `speedbench_${slug}.json`;
           break;
         case "agentperf":
           leaf = `agentperf_${slug}`;
@@ -333,7 +333,8 @@
   }
 
   function getClientModelArg(state) {
-    return state.model.clientModelMode === "fullpath"
+    const mode = String(state.model.clientModelMode || "alias").toLowerCase();
+    return mode === "fullpath"
       ? state.model.fullPath
       : (state.model.alias || "model");
   }
@@ -353,6 +354,7 @@
     const isWin = profile.os === "windows";
     const s = state.suites[suiteId];
     const binDir = state.hardware.binDir || profile.defaultBinDir;
+    const port = state.hardware.port || 8080;
     const serverBin = profile.llamaServerBin;
     const devFlags = getDeviceFlags(state);
     const isSpeed = suiteId === "speed_bench";
@@ -365,12 +367,12 @@
       `${serverBin}`,
       `  -m "${state.model.fullPath}"`,
       `  ${aliasFlag}`,
-      `  ${[devFlags, `--host ${state.hardware.host}`, `--port ${state.hardware.port}`, "-ngl 99", faFlag, `-c ${s.c}`, kvFlags, `-np ${s.np || 1}`, jinjaFlag].filter(Boolean).join(" ")}`
+      `  ${[devFlags, `--host ${state.hardware.host}`, `--port ${port}`, "-ngl 99", faFlag, `-c ${s.c}`, kvFlags, `-np ${s.np || 1}`, jinjaFlag].filter(Boolean).join(" ")}`
     ];
 
     const preamble = isWin
-      ? `# Terminal 1 — Launch llama-server (${profile.shortName})\nSet-Location "${binDir}"\n`
-      : `# Terminal 1 — Launch llama-server (${profile.shortName})\ncd "${binDir}"\n`;
+      ? `# Terminal 1 — Launch llama-server (${profile.shortName})\nStop-Process -Name "llama-server" -Force -ErrorAction SilentlyContinue\nSet-Location "${binDir}"\n`
+      : `# Terminal 1 — Launch llama-server (${profile.shortName})\npkill -u "$USER" -9 -f "llama-server" 2>/dev/null || true; fuser -k ${port}/tcp 2>/dev/null || true\ncd "${binDir}"\n`;
 
     return preamble + formatMultiline(cmdLines, profile.os);
   }
@@ -436,10 +438,12 @@
     if (suiteId === "llmperf") {
       const pyBin = isWin ? "python" : "python3";
       const sep = isWin ? "\\" : "/";
+      const llmperfDir = joinPath(benchRoot, "llmperf", sep);
+      const cdLlmperf = isWin ? `Set-Location "${llmperfDir}"` : `cd "${llmperfDir}"`;
       const envSet = isWin
         ? `$env:OPENAI_API_BASE = "${v1Url}"\n$env:OPENAI_API_KEY = "dummy"`
         : `export OPENAI_API_BASE="${v1Url}"\nexport OPENAI_API_KEY="dummy"`;
-      const scriptPath = joinPath(joinPath(benchRoot, "llmperf", sep), "token_benchmark_ray.py", sep);
+      const scriptPath = joinPath(llmperfDir, "token_benchmark_ray.py", sep);
 
       const lines = [
         `${pyBin} "${scriptPath}"`,
@@ -450,7 +454,7 @@
         `  --results-dir "${outTarget.fullPath.replace(/[\\/]$/, "")}"`
       ];
 
-      return `# Terminal 2 — llmperf Ray Multi-Stream Concurrency\n${mkdirCmd}\n${venvActivate}\n${envSet}\n` + formatMultiline(lines, profile.os);
+      return `# Terminal 2 — llmperf Ray Multi-Stream Concurrency\n${mkdirCmd}\n${venvActivate}\n${cdLlmperf}\n${envSet}\n` + formatMultiline(lines, profile.os);
     }
 
     if (suiteId === "speed_bench") {
@@ -513,8 +517,8 @@
         `  --endpoint-type chat --streaming --ui simple`,
         `  --concurrency ${s.concurrency} --request-count ${s.requestCount}`,
         `  --synthetic-input-tokens-mean ${s.islMean} --output-tokens-mean ${s.oslMean}`,
-        s.ignoreEos ? `  --extra-inputs "ignore_eos:true"` : null,
-        `  --artifact-dir "${outDirClean}"`
+        `  ${[s.ignoreEos ? '--extra-inputs "ignore_eos:true"' : "", '--extra-inputs "cache_prompt:false"'].filter(Boolean).join(" ")}`,
+        `  --random-seed 42 --use-server-token-count --artifact-dir "${outDirClean}"`
       ];
       return `# Terminal 2 — AIPerf Standard Concurrency\n${mkdirOut}\n${venvActivate}\n` + formatMultiline(lines, profile.os);
     }
@@ -868,23 +872,25 @@
           const json = JSON.parse(text);
           const rawStr = JSON.stringify(json);
           const expectedOsl = String(state.suites.speed_bench.osl);
-          if (json.osl && String(json.osl) !== expectedOsl) {
+          const recordedOsl = json.osl || (Array.isArray(json.results) && json.results[0] && json.results[0].osl);
+          if (recordedOsl && String(recordedOsl) !== expectedOsl) {
             results[meta.id] = {
               suiteId: meta.id,
               status: "partial",
               label: "PARTIAL / SETTING MISMATCH",
               fileCount: matched.length,
               totalBytes,
-              detail: `SPEED-Bench used OSL=${json.osl} instead of active OSL=${expectedOsl}.`
+              detail: `SPEED-Bench used OSL=${recordedOsl} instead of active OSL=${expectedOsl}.`
             };
           } else if (/\d+\.\d+/.test(rawStr)) {
+            const itemCount = Array.isArray(json.results) ? ` (${json.results.length} runs)` : "";
             results[meta.id] = {
               suiteId: meta.id,
               status: "verified",
               label: "VERIFIED COMPLETE",
               fileCount: matched.length,
               totalBytes,
-              detail: `Valid SPEED-Bench JSON verified (${Math.round(totalBytes / 1024 * 10) / 10} KB).`
+              detail: `Valid SPEED-Bench JSON verified${itemCount} (${Math.round(totalBytes / 1024 * 10) / 10} KB).`
             };
           } else {
             results[meta.id] = {
@@ -1065,8 +1071,36 @@
     if (lower.endsWith(".json")) {
       try {
         const j = JSON.parse(content);
-        if (lower.includes("speedbench") || j.results || j.categories) {
+        if (lower.includes("speedbench") || Array.isArray(j.results) || j.results || j.categories) {
           const cats = j.categories || {};
+          const catBuckets = { coding: [], reasoning: [], writing: [], math: [], all: [] };
+          if (Array.isArray(j.results)) {
+            j.results.forEach((item) => {
+              if (!item || typeof item !== "object") return;
+              const catName = String(item.category || item.task || item.domain || "").toLowerCase();
+              const tps = Number(
+                item.tg_tps ??
+                item.decode_tps ??
+                item.tps ??
+                item.tokens_per_second ??
+                item.speed ??
+                (item.eval_tokens && item.eval_time ? item.eval_tokens / item.eval_time : 0)
+              ) || 0;
+              if (tps > 0) {
+                catBuckets.all.push(tps);
+                if (catName.includes("cod")) catBuckets.coding.push(tps);
+                else if (catName.includes("reason")) catBuckets.reasoning.push(tps);
+                else if (catName.includes("writ") || catName.includes("rag") || catName.includes("role")) catBuckets.writing.push(tps);
+                else if (catName.includes("math")) catBuckets.math.push(tps);
+              }
+            });
+          }
+          const avg = (arr) => (arr.length ? Math.round((arr.reduce((a, b) => a + b, 0) / arr.length) * 10) / 10 : 0);
+          const coding = Number(cats.coding?.tg_tps || j.coding || avg(catBuckets.coding) || 0);
+          const reasoning = Number(cats.reasoning?.tg_tps || j.reasoning || avg(catBuckets.reasoning) || 0);
+          const writing = Number(cats.writing?.tg_tps || j.writing || avg(catBuckets.writing) || 0);
+          const math = Number(cats.math?.tg_tps || j.math || avg(catBuckets.math) || 0);
+          const overall = Number(j.overall_tps || j.mean_tps || avg(catBuckets.all) || avg([coding, reasoning, writing, math].filter(Boolean)) || 0);
           return {
             id: "parsed-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7),
             isSample: false,
@@ -1074,13 +1108,7 @@
             gpuLabel: meta.gpuLabel,
             modelLabel: meta.modelLabel,
             suiteType: "speed_bench",
-            metrics: {
-              coding: Number(cats.coding?.tg_tps || j.coding || 0),
-              reasoning: Number(cats.reasoning?.tg_tps || j.reasoning || 0),
-              writing: Number(cats.writing?.tg_tps || j.writing || 0),
-              math: Number(cats.math?.tg_tps || j.math || 0),
-              overall: Number(j.overall_tps || j.mean_tps || 0)
-            }
+            metrics: { coding, reasoning, writing, math, overall }
           };
         }
         if (lower.includes("aiperf")) {
@@ -1176,16 +1204,18 @@
     ].join("\n");
 
     const vramSweep = [
-      `# Pre-Benchmark VRAM Sweep (Terminates Ollama, LM Studio, ComfyUI, vLLM & llama-server)`,
-      `pkill -u "$USER" -9 -f "llama-server" 2>/dev/null`,
-      `pkill -u "$USER" -9 -f "ollama serve" 2>/dev/null`,
-      `pkill -u "$USER" -9 -f "ComfyUI" 2>/dev/null`,
-      `pkill -u "$USER" -9 -f "lm-studio" 2>/dev/null`,
-      `pkill -u "$USER" -9 -f "vllm serve" 2>/dev/null`,
-      `tmux kill-session -t ollama 2>/dev/null`,
-      `tmux kill-session -t comfyui 2>/dev/null`,
-      `tmux kill-session -t vllm_nemotron 2>/dev/null`,
-      `fuser -k -9 8080/tcp 11434/tcp 1234/tcp 8000/tcp 8189/tcp 2>/dev/null`,
+      `# Pre-Benchmark VRAM Sweep (Terminates Ollama systemd/tmux, LM Studio, ComfyUI, vLLM & llama-server)`,
+      `sudo systemctl stop ollama 2>/dev/null || true`,
+      `"$HOME/.lmstudio/bin/lms" server stop 2>/dev/null || true`,
+      `pkill -u "$USER" -9 -f "llama-server" 2>/dev/null || true`,
+      `pkill -u "$USER" -9 -f "ollama serve" 2>/dev/null || true`,
+      `pkill -u "$USER" -9 -f "ComfyUI" 2>/dev/null || true`,
+      `pkill -u "$USER" -9 -f "lm-studio" 2>/dev/null || true`,
+      `pkill -u "$USER" -9 -f "vllm serve" 2>/dev/null || true`,
+      `tmux kill-session -t ollama 2>/dev/null || true`,
+      `tmux kill-session -t comfyui 2>/dev/null || true`,
+      `tmux kill-session -t vllm_nemotron 2>/dev/null || true`,
+      `fuser -k -9 8080/tcp 11434/tcp 1234/tcp 8000/tcp 8189/tcp 2>/dev/null || true`,
       `nvidia-smi`
     ].join("\n");
 
@@ -1230,7 +1260,7 @@
     if (isWin) {
       cards.push({
         id: "setup_verify",
-        title: `01 · Pre-flight Check: Verify GPU, Binaries, Model .gguf, Python & Venvs (${profile.shortName})`,
+        title: `01 · Pre-flight Check: Verify GPU, Binaries, Model .gguf, Python 3.12 & Venvs (${profile.shortName})`,
         badge: "PRE-FLIGHT",
         cmd: [
           `# Pre-flight Verification — ${profile.name}`,
@@ -1240,11 +1270,11 @@
           `@("${binDir}\\llama-bench.exe", "${binDir}\\llama-server.exe", "${repoDir}\\tools\\server\\bench\\speed-bench\\speed_bench.py") | ForEach-Object { if (Test-Path $_) { Write-Host "[OK] $_" } else { Write-Host "[MISSING] $_" } }`,
           `Write-Host "=== 3. Active GGUF Model & Models Directory ==="`,
           `if (Test-Path "${modelPath}") { Write-Host "[OK] Active model found: ${modelPath}" } else { Write-Host "[MISSING] Active model not found: ${modelPath}" }`,
-          `Get-ChildItem -Path "${modelDir}" -Filter "*.gguf" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName`,
-          `Write-Host "=== 4. Python, Venvs & Packages ==="`,
-          `py --version`,
+          `Get-ChildItem -Path "${modelDir}" -Filter "*.gguf" -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ("  {0} ({1} GB)" -f $_.FullName, [math]::Round($_.Length / 1GB, 2)) }`,
+          `Write-Host "=== 4. Installed Python Versions, Venvs & Packages ==="`,
+          `py -0p`,
           `if (Test-Path "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe") {`,
-          `  & "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe" -c "import importlib.util; [print('[OK]' if importlib.util.find_spec(m) else '[MISSING]', m) for m in ('llama_benchy','aiperf','ray')]"`,
+          `  & "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe" -c "import sys, importlib.util; print('venv Python:', sys.version.split()[0]); [print('[OK]' if importlib.util.find_spec(m) else '[MISSING]', m) for m in ('llama_benchy','aiperf','ray')]"`,
           `} else { Write-Host "[MISSING] ${benchRoot}\\.venv-aiperf" }`,
           `if (Test-Path "${benchRoot}\\llmperf\\token_benchmark_ray.py") { Write-Host "[OK] token_benchmark_ray.py" } else { Write-Host "[MISSING] llmperf repo" }`,
           `if (Test-Path "${benchRoot}\\.venv-agentperf\\Scripts\\agentperf-local.exe") { Write-Host "[OK] agentperf-local" } else { Write-Host "[MISSING] ${benchRoot}\\.venv-agentperf (agentperf-local)" }`,
@@ -1255,7 +1285,7 @@
     } else {
       cards.push({
         id: "setup_verify",
-        title: `01 · Pre-flight Check: Verify GPU, Binaries, Model .gguf, Python & Venvs (${profile.shortName})`,
+        title: `01 · Pre-flight Check: Verify GPU, Binaries, Model .gguf, Python 3.12 & Venvs (${profile.shortName})`,
         badge: "PRE-FLIGHT",
         cmd: [
           `# Pre-flight Verification — ${profile.name}`,
@@ -1263,10 +1293,11 @@
           `echo "=== 2. Binaries & SPEED-Bench Check ==="`,
           `for f in "${binDir}/llama-bench" "${binDir}/llama-server" "${repoDir}/tools/server/bench/speed-bench/speed_bench.py"; do test -e "$f" && echo "[OK] $f" || echo "[MISSING] $f"; done`,
           `echo "=== 3. Active GGUF Model & Models Directory ==="`,
-          `test -f "${modelPath}" && echo "[OK] Active model found: ${modelPath}" || echo "[MISSING] Active model not found: ${modelPath}"`,
-          `find "${modelDir}" -maxdepth 3 -name "*.gguf" 2>/dev/null || true`,
+          `test -f "${modelPath}" && ls -lh "${modelPath}" || echo "[MISSING] Active model not found: ${modelPath}"`,
+          `find "${modelDir}" -maxdepth 3 -name "*.gguf" -exec ls -lh {} + 2>/dev/null || true`,
           `echo "=== 4. Python, Venvs & Packages ==="`,
           `python3 --version`,
+          `if [ ! -e "${benchRoot}/.venv-aiperf" ] && [ -d "$HOME/.venv-aiperf" ]; then ln -sfn "$HOME/.venv-aiperf" "${benchRoot}/.venv-aiperf"; fi`,
           `if [ -x "${benchRoot}/.venv-aiperf/bin/python3" ]; then "${benchRoot}/.venv-aiperf/bin/python3" -c "import importlib.util; [print('[OK]' if importlib.util.find_spec(m) else '[MISSING]', m) for m in ('llama_benchy','aiperf','ray')]"; else echo "[MISSING] ${benchRoot}/.venv-aiperf"; fi`,
           `test -f "${benchRoot}/llmperf/token_benchmark_ray.py" && echo "[OK] token_benchmark_ray.py" || echo "[MISSING] llmperf repo"`,
           `test -x "${benchRoot}/.venv-agentperf/bin/agentperf-local" && echo "[OK] agentperf-local" || echo "[MISSING] ${benchRoot}/.venv-agentperf (agentperf-local)"`,
@@ -1277,67 +1308,134 @@
     }
 
     if (profile.id === "dgx_spark_linux_arm64") {
+      cards.push({
+        id: "setup_llamacpp",
+        title: "02 · Install / Build llama.cpp CUDA Binaries & SPEED-Bench Repo (DGX Spark ARM64)",
+        badge: "LLAMA.CPP",
+        cmd: [
+          `sudo apt update && sudo apt install -y build-essential cmake git libcurl4-openssl-dev`,
+          `if [ ! -d "${repoDir}" ]; then git clone https://github.com/ggml-org/llama.cpp.git "${repoDir}"; fi`,
+          `cd "${repoDir}"`,
+          `cmake -B build -DGGML_CUDA=ON`,
+          `cmake --build build --config Release -j "$(nproc)"`,
+          `ls -lh "${binDir}/llama-bench" "${binDir}/llama-server" "${repoDir}/tools/server/bench/speed-bench/speed_bench.py"`
+        ].join("\n")
+      });
+    } else {
+      cards.push({
+        id: "setup_llamacpp",
+        title: `02 · Clone llama.cpp Repo (for SPEED-Bench) & Verify Binaries (${profile.shortName})`,
+        badge: "LLAMA.CPP",
+        cmd: [
+          `# Clone llama.cpp repository so tools\\server\\bench\\speed-bench\\speed_bench.py is present`,
+          `if (-not (Test-Path "${repoDir}")) { git clone https://github.com/ggml-org/llama.cpp.git "${repoDir}" }`,
+          `New-Item -ItemType Directory -Force -Path "${binDir}" | Out-Null`,
+          `@("${binDir}\\llama-bench.exe", "${binDir}\\llama-server.exe", "${repoDir}\\tools\\server\\bench\\speed-bench\\speed_bench.py") | ForEach-Object {`,
+          `  if (Test-Path $_) { Write-Host "[READY] $_" } else { Write-Host "[ACTION NEEDED] Missing $_ — extract llama.cpp release into ${binDir}" }`,
+          `}`
+        ].join("\n")
+      });
+    }
+
+    if (profile.id === "dgx_spark_linux_arm64") {
       const aipPkg = state.hardware.nonSudoSetup ? "aiperf" : '"aiperf[tdigest]"';
       cards.push({
         id: "setup_env",
-        title: "02 · Install Python Venvs & Benchmark Dependencies (DGX Spark ARM64)",
+        title: "03 · Install Python Venvs & Benchmark Dependencies (DGX Spark ARM64)",
         badge: "AARCH64 SETUP",
         cmd: [
           state.hardware.nonSudoSetup
             ? `# Non-sudo fallback (skips crick C extension compilation)`
-            : `sudo apt update && sudo apt install -y python3-dev python3.12-dev build-essential cmake git`,
+            : `sudo apt update && sudo apt install -y python3-dev python3.12-dev python3-venv build-essential cmake git`,
           `mkdir -p "${benchRoot}"`,
           `cd "${benchRoot}"`,
           `python3 -m venv "${benchRoot}/.venv-aiperf"`,
           `source "${benchRoot}/.venv-aiperf/bin/activate"`,
-          `pip install --upgrade pip`,
-          `pip install ${aipPkg} llama-benchy`,
-          `git clone https://github.com/ray-project/llmperf.git "${benchRoot}/llmperf"`,
-          `sed -i 's/<3.11,\\s*//g; s/,\\s*<3.11//g' "${benchRoot}/llmperf/pyproject.toml"`,
+          `pip install --upgrade pip setuptools wheel`,
+          `if [ ! -d "${benchRoot}/llmperf" ]; then git clone https://github.com/ray-project/llmperf.git "${benchRoot}/llmperf"; fi`,
+          `if [ -f "${benchRoot}/llmperf/pyproject.toml" ]; then sed -i 's/<3.11,\\s*//g; s/,\\s*<3.11//g' "${benchRoot}/llmperf/pyproject.toml"; fi`,
+          `if [ -f "${benchRoot}/llmperf/setup.py" ]; then sed -i 's/<3.11,\\s*//g; s/,\\s*<3.11//g' "${benchRoot}/llmperf/setup.py"; fi`,
           `pip install -e "${benchRoot}/llmperf"`,
+          `pip install llama-benchy`,
+          `pip install ${aipPkg} || pip install aiperf`,
           `python3 -m venv "${benchRoot}/.venv-agentperf"`,
-          `"${benchRoot}/.venv-agentperf/bin/pip" install --upgrade pip aa-agentperf-local`
+          `"${benchRoot}/.venv-agentperf/bin/pip" install --upgrade pip setuptools wheel aa-agentperf-local`
         ].join("\n")
       });
     } else if (profile.id === "rtx_spark_win_arm64") {
       const aipPkg = state.hardware.rtxArmTdigestCompile ? '"aiperf[tdigest]"' : "aiperf";
       cards.push({
         id: "setup_env",
-        title: "02 · Install Python Venvs & Benchmark Dependencies (Windows ARM64)",
+        title: "03 · Install Python 3.12, Venvs & Benchmark Dependencies (Windows ARM64)",
         badge: "WIN ARM64 SETUP",
         cmd: [
+          `# Install Python 3.12 x64 (recommended on Win-ARM64 so ray/llmperf & aiperf PyPI wheels install without C++ compilation errors)`,
+          `if (-not (py -3.12 --version 2>$null)) { winget install -e --id Python.Python.3.12 --architecture x64 --accept-package-agreements --accept-source-agreements }`,
+          `$pyCmd = if (py -3.12 --version 2>$null) { "py -3.12" } elseif (py -3.11 --version 2>$null) { "py -3.11" } else { "py" }`,
           `New-Item -ItemType Directory -Force -Path "${benchRoot}" | Out-Null`,
           `Set-Location "${benchRoot}"`,
-          `py -m venv "${benchRoot}\\.venv-aiperf"`,
+          `Invoke-Expression "$pyCmd -m venv '${benchRoot}\\.venv-aiperf'"`,
           `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force`,
           `& "${benchRoot}\\.venv-aiperf\\Scripts\\Activate.ps1"`,
-          `pip install --upgrade pip`,
-          `pip install ${aipPkg} llama-benchy`,
-          `git clone https://github.com/ray-project/llmperf.git "${benchRoot}\\llmperf"`,
-          `(Get-Content "${benchRoot}\\llmperf\\pyproject.toml") -replace '<3\\.11,?\\s*|,\\s*<3\\.11', '' | Set-Content "${benchRoot}\\llmperf\\pyproject.toml"`,
+          `python -m pip install --upgrade pip setuptools wheel`,
+          `if (-not (Test-Path "${benchRoot}\\llmperf")) { git clone https://github.com/ray-project/llmperf.git "${benchRoot}\\llmperf" }`,
+          `if (Test-Path "${benchRoot}\\llmperf\\pyproject.toml") { (Get-Content "${benchRoot}\\llmperf\\pyproject.toml") -replace '<3\\.11,?\\s*|,\\s*<3\\.11', '' | Set-Content "${benchRoot}\\llmperf\\pyproject.toml" }`,
+          `if (Test-Path "${benchRoot}\\llmperf\\setup.py") { (Get-Content "${benchRoot}\\llmperf\\setup.py") -replace '<3\\.11,?\\s*|,\\s*<3\\.11', '' | Set-Content "${benchRoot}\\llmperf\\setup.py" }`,
           `pip install -e "${benchRoot}\\llmperf"`,
-          `py -m venv "${benchRoot}\\.venv-agentperf"`,
-          `& "${benchRoot}\\.venv-agentperf\\Scripts\\pip.exe" install --upgrade pip aa-agentperf-local`
+          `pip install ${aipPkg} llama-benchy`,
+          `Invoke-Expression "$pyCmd -m venv '${benchRoot}\\.venv-agentperf'"`,
+          `& "${benchRoot}\\.venv-agentperf\\Scripts\\pip.exe" install --upgrade pip setuptools wheel aa-agentperf-local`
         ].join("\n")
       });
     } else {
       cards.push({
         id: "setup_env",
-        title: `02 · Install Python Venvs & Benchmark Dependencies (${profile.shortName})`,
+        title: `03 · Install Python 3.12, Venvs & Benchmark Dependencies (${profile.shortName})`,
         badge: "WIN X64 SETUP",
         cmd: [
+          `# Ensure Python 3.12 is installed (ray/llmperf & aiperf require Python 3.11/3.12 wheels; Python 3.13+ lacks ray wheels)`,
+          `if (-not (py -3.12 --version 2>$null)) { winget install -e --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements }`,
+          `$pyCmd = if (py -3.12 --version 2>$null) { "py -3.12" } elseif (py -3.11 --version 2>$null) { "py -3.11" } else { "py" }`,
           `New-Item -ItemType Directory -Force -Path "${benchRoot}" | Out-Null`,
           `Set-Location "${benchRoot}"`,
-          `py -m venv "${benchRoot}\\.venv-aiperf"`,
+          `Invoke-Expression "$pyCmd -m venv '${benchRoot}\\.venv-aiperf'"`,
           `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force`,
           `& "${benchRoot}\\.venv-aiperf\\Scripts\\Activate.ps1"`,
-          `pip install --upgrade pip`,
-          `pip install "aiperf[tdigest]" llama-benchy`,
-          `git clone https://github.com/ray-project/llmperf.git "${benchRoot}\\llmperf"`,
-          `(Get-Content "${benchRoot}\\llmperf\\pyproject.toml") -replace '<3\\.11,?\\s*|,\\s*<3\\.11', '' | Set-Content "${benchRoot}\\llmperf\\pyproject.toml"`,
+          `python -m pip install --upgrade pip setuptools wheel`,
+          `if (-not (Test-Path "${benchRoot}\\llmperf")) { git clone https://github.com/ray-project/llmperf.git "${benchRoot}\\llmperf" }`,
+          `if (Test-Path "${benchRoot}\\llmperf\\pyproject.toml") { (Get-Content "${benchRoot}\\llmperf\\pyproject.toml") -replace '<3\\.11,?\\s*|,\\s*<3\\.11', '' | Set-Content "${benchRoot}\\llmperf\\pyproject.toml" }`,
+          `if (Test-Path "${benchRoot}\\llmperf\\setup.py") { (Get-Content "${benchRoot}\\llmperf\\setup.py") -replace '<3\\.11,?\\s*|,\\s*<3\\.11', '' | Set-Content "${benchRoot}\\llmperf\\setup.py" }`,
           `pip install -e "${benchRoot}\\llmperf"`,
-          `py -m venv "${benchRoot}\\.venv-agentperf"`,
-          `& "${benchRoot}\\.venv-agentperf\\Scripts\\pip.exe" install --upgrade pip aa-agentperf-local`
+          `pip install "aiperf[tdigest]" llama-benchy`,
+          `Invoke-Expression "$pyCmd -m venv '${benchRoot}\\.venv-agentperf'"`,
+          `& "${benchRoot}\\.venv-agentperf\\Scripts\\pip.exe" install --upgrade pip setuptools wheel aa-agentperf-local`
+        ].join("\n")
+      });
+    }
+
+    if (isWin) {
+      cards.push({
+        id: "setup_models",
+        title: `04 · Download / Verify Benchmark GGUF Models (Qwen3.8-27B & Qwen3.6-35B-A3B)`,
+        badge: "MODELS",
+        cmd: [
+          `# Conflict-free Python downloader (bypasses hf CLI PATH & transformers version conflicts)`,
+          `& "${benchRoot}\\.venv-aiperf\\Scripts\\pip.exe" install -U huggingface_hub`,
+          `& "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe" -c "from huggingface_hub import hf_hub_download; hf_hub_download('unsloth/Qwen3.8-27B-GGUF', 'Qwen3.8-27B-UD-Q4_K_M.gguf', local_dir=r'${modelDir}\\unsloth\\Qwen3.8-27B-GGUF'); hf_hub_download('unsloth/Qwen3.6-35B-A3B-GGUF', 'Qwen3.6-35B-A3B-UD-Q4_K_M.gguf', local_dir=r'${modelDir}\\unsloth\\Qwen3.6-35B-A3B-GGUF')"`,
+          `Get-ChildItem -Path "${modelDir}" -Filter "*.gguf" -Recurse | Select-Object FullName, @{Name="SizeGB";Expression={[math]::Round($_.Length/1GB,2)}}`
+        ].join("\n")
+      });
+    } else {
+      cards.push({
+        id: "setup_models",
+        title: `04 · Download / Verify Benchmark GGUF Models (Qwen3.8-27B & Qwen3.6-35B-A3B)`,
+        badge: "MODELS",
+        cmd: [
+          `# Conflict-free Python downloader (bypasses hf CLI PATH & transformers version conflicts)`,
+          `mkdir -p "${modelDir}"`,
+          `"${benchRoot}/.venv-aiperf/bin/pip" install -U huggingface_hub`,
+          `"${benchRoot}/.venv-aiperf/bin/python3" -c "from huggingface_hub import hf_hub_download; hf_hub_download('unsloth/Qwen3.8-27B-GGUF', 'Qwen3.8-27B-UD-Q4_K_M.gguf', local_dir='${modelDir}'); hf_hub_download('unsloth/Qwen3.6-35B-A3B-GGUF', 'Qwen3.6-35B-A3B-UD-Q4_K_M.gguf', local_dir='${modelDir}')"`,
+          `ls -lh "${modelDir}"/*.gguf`
         ].join("\n")
       });
     }
@@ -1345,7 +1443,7 @@
     if (isWin) {
       cards.push({
         id: "setup_cleanup",
-        title: `03 · Free VRAM & Stop Running llama-server (${profile.shortName})`,
+        title: `05 · Free VRAM & Stop Running llama-server (${profile.shortName})`,
         badge: "VRAM SWEEP",
         cmd: [
           `Stop-Process -Name "llama-server" -Force -ErrorAction SilentlyContinue`,
@@ -1355,7 +1453,7 @@
     } else {
       cards.push({
         id: "setup_cleanup",
-        title: "03 · Free VRAM & Stop Background AI Services (DGX Spark)",
+        title: "05 · Free VRAM & Stop Background AI Services (DGX Spark)",
         badge: "VRAM SWEEP",
         cmd: buildSshCommands(state).vramSweep
       });
@@ -1363,7 +1461,7 @@
 
     cards.push({
       id: "setup_fixes",
-      title: "04 · Clear llama-benchy Gutenberg Cache (ZeroDivisionError Fix)",
+      title: "06 · Clear llama-benchy Gutenberg Cache (ZeroDivisionError Fix)",
       badge: "HOTFIX",
       cmd: isWin
         ? `Remove-Item -Recurse -Force "$env:USERPROFILE\\.cache\\llama-benchy" -ErrorAction SilentlyContinue`
@@ -1373,21 +1471,37 @@
     if (profile.id === "dgx_spark_linux_arm64") {
       cards.push({
         id: "setup_hermes_dgx",
-        title: "05 · DGX Spark /models Symlink & Ollama Override",
+        title: "07 · DGX Spark /models Symlink, Ollama Override & start-ai / stop-ai Scripts",
         badge: "DGX HOST",
         cmd: [
-          `mkdir -p "$HOME/models" "$HOME/.lmstudio/.internal/temp"`,
+          `mkdir -p "$HOME/models" "$HOME/.lmstudio/.internal/temp" "$HOME/.cache/lm-studio" "$HOME/.local/bin"`,
           `chmod -R 755 "$HOME/.lmstudio/.internal"`,
+          `if [ -d "$HOME/.lmstudio/models" ] && [ ! -L "$HOME/.lmstudio/models" ]; then cp -rn "$HOME/.lmstudio/models/"* "$HOME/models/" 2>/dev/null || true; rm -rf "$HOME/.lmstudio/models"; fi`,
+          `if [ -d "$HOME/.cache/lm-studio/models" ] && [ ! -L "$HOME/.cache/lm-studio/models" ]; then cp -rn "$HOME/.cache/lm-studio/models/"* "$HOME/models/" 2>/dev/null || true; rm -rf "$HOME/.cache/lm-studio/models"; fi`,
           `ln -sfn "$HOME/models" "$HOME/.lmstudio/models"`,
+          `ln -sfn "$HOME/models" "$HOME/.cache/lm-studio/models"`,
           ``,
-          `sudo bash -c "cat << 'EOF' > /etc/systemd/system/ollama.service.d/override.conf`,
+          `sudo mkdir -p /etc/systemd/system/ollama.service.d`,
+          `sudo bash -c "cat << EOF > /etc/systemd/system/ollama.service.d/override.conf`,
           `[Service]`,
-          `User=$USER`,
-          `Group=$USER`,
+          `User=\${SUDO_USER:-$USER}`,
+          `Group=\${SUDO_USER:-$USER}`,
           `Environment=\\"OLLAMA_HOST=0.0.0.0:11434\\"`,
           `Environment=\\"OLLAMA_MODELS=$HOME/models\\"`,
           `EOF"`,
-          `sudo systemctl daemon-reload && sudo systemctl restart ollama`
+          `sudo systemctl daemon-reload && sudo systemctl restart ollama`,
+          ``,
+          `# Create sudo-free stop-ai shortcut`,
+          `cat << 'EOF' > "$HOME/stop_ai_stack.sh"`,
+          `#!/usr/bin/env bash`,
+          `sudo systemctl stop ollama 2>/dev/null || true`,
+          `"$HOME/.lmstudio/bin/lms" server stop 2>/dev/null || true`,
+          `pkill -u "$USER" -9 -f "llama-server|ollama serve|ComfyUI|lm-studio|vllm serve" 2>/dev/null || true`,
+          `tmux kill-session -t ollama 2>/dev/null || true`,
+          `tmux kill-session -t comfyui 2>/dev/null || true`,
+          `fuser -k -9 8080/tcp 11434/tcp 1234/tcp 8000/tcp 8189/tcp 2>/dev/null || true`,
+          `EOF`,
+          `chmod +x "$HOME/stop_ai_stack.sh" && ln -sf "$HOME/stop_ai_stack.sh" "$HOME/.local/bin/stop-ai"`
         ].join("\n")
       });
     }
