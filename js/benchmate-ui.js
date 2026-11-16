@@ -563,6 +563,7 @@
       const expanded = Boolean(state.ui.expandedDrawers[meta.id]);
       const serverCmd = meta.hasServer ? E.buildServerCommand(state, meta.id) : "";
       const clientCmd = E.buildSuiteClientCommand(state, meta.id);
+      const lifecycle = E.getServerLifecycleInfo(state, meta.id);
 
       const modBadge = modified
         ? `<span class="sb-badge sb-badge-warn" data-suite-mod="${esc(meta.id)}">Modified</span>`
@@ -592,12 +593,16 @@
             <span class="suite-card-num">${esc(meta.index)}</span>
             <span>${esc(meta.title)}</span>
             <code class="suite-output-tag" data-output-tag="${esc(meta.id)}" data-tip="hw_resultsDir">-&gt; ${esc(target.leaf)}</code>
+            <span class="sb-badge sb-srv-badge-${esc(lifecycle.tone)}" data-suite-srv-badge="${esc(meta.id)}">${esc(lifecycle.badge)}</span>
             ${modBadge}
           </div>
           <div class="suite-card-actions">
             <button type="button" class="btn btn-sm" data-toggle-drawer="${esc(meta.id)}">Parameters ${expanded ? "&#9652;" : "&#9662;"}</button>
             ${resetBtn}
           </div>
+        </div>
+        <div class="suite-lifecycle-bar suite-lifecycle-${esc(lifecycle.tone)}" data-suite-srv-note="${esc(meta.id)}">
+          <strong>Server / Terminal Action:</strong> ${esc(lifecycle.summary)}
         </div>
         ${drawerHtml}
         <div class="suite-terminals-stack">
@@ -654,6 +659,18 @@
       </div>
 
       <div class="guardrails-wrap" id="guardrails-root">${renderGuardrailsHtml()}</div>
+
+      <div class="sb-banner sb-lifecycle-guide">
+        <div>
+          <strong>Terminal &amp; Server Lifecycle Guide (<span id="lifecycle-model-label">${esc(state.model.alias)}</span>):</strong>
+          <div class="sb-lifecycle-grid">
+            <span><strong class="sb-lc-tag sb-lc-cyan">01 · llama-bench:</strong> No server (stop Terminal 1 first).</span>
+            <span><strong class="sb-lc-tag sb-lc-green">02, 03, 05, 06A (Shared 32K Server):</strong> Share the exact same <code>llama-server (-c 32768 -np 1)</code> — keep Terminal 1 running across all four!</span>
+            <span><strong class="sb-lc-tag sb-lc-amber">04 (--jinja) &amp; 06B (-c 70000 q8_0):</strong> Press <code>Ctrl+C</code> in Terminal 1 and relaunch <code>llama-server</code> with that card's Server command.</span>
+            <span><strong class="sb-lc-tag sb-lc-amber">Switching Models:</strong> Always press <code>Ctrl+C</code> in Terminal 1 and relaunch <code>llama-server</code> when changing models.</span>
+          </div>
+        </div>
+      </div>
 
       <div class="suite-list">${suiteCardsHtml}</div>
 
@@ -926,16 +943,30 @@
       D.SUITE_METADATA.forEach((meta) => {
         const target = E.getOutputTarget(state, meta.id);
         const mod = E.isSuiteCustomized(state, meta.id);
+        const lifecycle = E.getServerLifecycleInfo(state, meta.id);
         const tagEl = document.querySelector(`[data-output-tag="${meta.id}"]`);
         if (tagEl) tagEl.textContent = `-> ${target.leaf}`;
         const modEl = document.querySelector(`[data-suite-mod="${meta.id}"]`);
         if (modEl) modEl.style.display = mod ? "inline-flex" : "none";
+
+        const srvBadgeEl = document.querySelector(`[data-suite-srv-badge="${meta.id}"]`);
+        if (srvBadgeEl) {
+          srvBadgeEl.className = `sb-badge sb-srv-badge-${lifecycle.tone}`;
+          srvBadgeEl.textContent = lifecycle.badge;
+        }
+        const srvNoteEl = document.querySelector(`[data-suite-srv-note="${meta.id}"]`);
+        if (srvNoteEl) {
+          srvNoteEl.className = `suite-lifecycle-bar suite-lifecycle-${lifecycle.tone}`;
+          srvNoteEl.innerHTML = `<strong>Server / Terminal Action:</strong> ${esc(lifecycle.summary)}`;
+        }
 
         const sPre = document.querySelector(`[data-server-pre="${meta.id}"]`);
         if (sPre && meta.hasServer) sPre.innerHTML = E.highlightShell(E.buildServerCommand(state, meta.id));
         const cPre = document.querySelector(`[data-client-pre="${meta.id}"]`);
         if (cPre) cPre.innerHTML = E.highlightShell(E.buildSuiteClientCommand(state, meta.id));
       });
+      const lcModelEl = document.getElementById("lifecycle-model-label");
+      if (lcModelEl) lcModelEl.textContent = state.model.alias;
     } else if (state.ui.activeTab === "setup") {
       E.buildSetupCards(state).forEach((c) => {
         const pre = document.querySelector(`[data-setup-pre="${c.id}"]`);

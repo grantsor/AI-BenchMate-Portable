@@ -510,7 +510,7 @@
     },
     setup_env: {
       title: "02 · Install & Verify Python 3.12, Venvs & Benchmark Suites",
-      desc: "Automatically installs Python 3.12 via winget if missing, creates isolated .venv-aiperf and .venv-agentperf virtual environments, clones & patches llmperf (<3.11 constraint removed), and installs llama-benchy, aiperf (with automatic fallback if C++ build tools are absent), and aa-agentperf-local.",
+      desc: "Automatically installs Python 3.12 via winget if missing, creates isolated .venv-aiperf and .venv-agentperf virtual environments, clones & patches llmperf (<3.11 constraint removed), and installs llama-benchy, aiperf (with automatic fallback if C++ build tools are absent), and agentperf-local.",
       rec: "Recommended: Run SECOND on initial setup so all Python benchmark clients and virtual environments are ready."
     },
     setup_models: {

@@ -348,6 +348,91 @@
   }
 
   // ---------- Server & Client Command Builders ----------
+  function getServerConfigSignature(state, suiteId) {
+    if (!suiteId || suiteId === "llama_bench") return "NO_SERVER";
+    const s = state.suites[suiteId];
+    if (!s) return "NO_SERVER";
+    const isSpeed = suiteId === "speed_bench";
+    const faFlag = getFaFlag(state, s.fa || "1", isSpeed);
+    const ctk = s.ctk || "fp16";
+    const ctv = ctk !== "fp16" ? s.ctv || ctk : "fp16";
+    const jinja = isSpeed && s.jinja ? "--jinja" : "";
+    return [
+      state.model.fullPath,
+      state.model.alias,
+      getDeviceFlags(state),
+      state.hardware.host,
+      state.hardware.port || 8080,
+      faFlag,
+      `c=${s.c}`,
+      `np=${s.np || 1}`,
+      `kv=${ctk}/${ctv}`,
+      jinja
+    ].join("|");
+  }
+
+  function getServerLifecycleInfo(state, suiteId) {
+    if (suiteId === "llama_bench") {
+      return {
+        mode: "no_server",
+        tone: "cyan",
+        badge: "NO SERVER · STOP TERMINAL 1 IF RUNNING",
+        summary: `Direct GPU Run (No HTTP Server) — If llama-server is running in Terminal 1, press Ctrl+C to stop it first (this command also auto-stops any background llama-server so 100% of VRAM is free).`,
+        sharedIndices: []
+      };
+    }
+
+    const sig = getServerConfigSignature(state, suiteId);
+    const s = state.suites[suiteId];
+    const SUITE_METADATA = global.BenchmateData.SUITE_METADATA;
+    const allServerMetas = SUITE_METADATA.filter((m) => m.hasServer);
+    const sharedMetas = allServerMetas.filter((m) => getServerConfigSignature(state, m.id) === sig);
+    const sharedIndices = sharedMetas.map((m) => m.index);
+    const curIdx = SUITE_METADATA.findIndex((m) => m.id === suiteId);
+    const prevMeta = curIdx > 0 ? SUITE_METADATA[curIdx - 1] : null;
+    const prevSig = prevMeta ? getServerConfigSignature(state, prevMeta.id) : "NO_SERVER";
+    const kvLabel = s.ctk && s.ctk !== "fp16" ? `${s.ctk}/${s.ctv || s.ctk} KV` : "fp16 KV";
+    const extraFlagsLabel = suiteId === "speed_bench" && s.jinja ? ", --jinja -fa on" : "";
+
+    if (prevMeta && prevMeta.hasServer && prevSig === sig) {
+      return {
+        mode: "reuse_prev",
+        tone: "green",
+        badge: `REUSE SERVER FROM ${prevMeta.index} · DO NOT RESTART TERMINAL 1`,
+        summary: `Same Server as Suite ${prevMeta.index} (-c ${s.c}, ${kvLabel}${extraFlagsLabel}${sharedIndices.length > 2 ? ` · Shared by Suites ${sharedIndices.join(", ")}` : ""}) — If Terminal 1 is already running with ${state.model.alias}, DO NOT press Ctrl+C or restart Terminal 1; just run Terminal 2 — Client!`,
+        sharedIndices
+      };
+    }
+
+    if (!prevMeta || !prevMeta.hasServer) {
+      return {
+        mode: "start_new",
+        tone: "blue",
+        badge: `LAUNCH SERVER IN TERMINAL 1${sharedIndices.length > 1 ? ` · SHARED BY ${sharedIndices.join(", ")}` : ""}`,
+        summary: `Start Terminal 1 (-c ${s.c}, ${kvLabel}${extraFlagsLabel}) and wait for "server is listening on http://${state.hardware.host}:${state.hardware.port}" before running Terminal 2.${sharedIndices.length > 1 ? ` Keep Terminal 1 running afterward — Suites ${sharedIndices.join(", ")} share this exact server!` : ""}`,
+        sharedIndices
+      };
+    }
+
+    if (sharedIndices.length > 1) {
+      return {
+        mode: "relaunch_shared",
+        tone: "amber",
+        badge: `RELAUNCH SERVER (DIFFERS FROM ${prevMeta.index}) · SHARED BY ${sharedIndices.join(", ")}`,
+        summary: `Server flags differ from Suite ${prevMeta.index} (${prevMeta.shortLabel}). Press Ctrl+C in Terminal 1, paste Terminal 1 — Server below (-c ${s.c}, ${kvLabel}${extraFlagsLabel}), and wait for model load. (Suites ${sharedIndices.join(", ")} share this server — keep it open for the next shared suite, or reuse it if you skipped Suite ${prevMeta.index}!)`,
+        sharedIndices
+      };
+    }
+
+    return {
+      mode: "relaunch_dedicated",
+      tone: "amber",
+      badge: `MUST RELAUNCH SERVER · -c ${s.c}, ${kvLabel}${suiteId === "speed_bench" && s.jinja ? ", --jinja" : ""}`,
+      summary: `Dedicated Server Config (-c ${s.c}, ${kvLabel}${extraFlagsLabel}) differs from Suite ${prevMeta.index}. Press Ctrl+C in Terminal 1 to stop the previous server, paste Terminal 1 — Server below, and wait for "server is listening" before running Terminal 2.`,
+      sharedIndices
+    };
+  }
+
   function buildServerCommand(state, suiteId) {
     if (suiteId === "llama_bench") return "";
     const profile = global.BenchmateData.HARDWARE_PROFILES[state.hardware.profileId];
@@ -362,6 +447,7 @@
     const kvFlags = (s.ctk && s.ctk !== "fp16") ? `-ctk ${s.ctk} -ctv ${s.ctv || s.ctk}` : "";
     const jinjaFlag = isSpeed && s.jinja ? "--jinja" : "";
     const aliasFlag = `--alias "${state.model.alias}"`;
+    const lifecycle = getServerLifecycleInfo(state, suiteId);
 
     const cmdLines = [
       `${serverBin}`,
@@ -370,9 +456,10 @@
       `  ${[devFlags, `--host ${state.hardware.host}`, `--port ${port}`, "-ngl 99", faFlag, `-c ${s.c}`, kvFlags, `-np ${s.np || 1}`, jinjaFlag].filter(Boolean).join(" ")}`
     ];
 
+    const lifecycleComment = `# [${lifecycle.badge}] ${lifecycle.summary}\n`;
     const preamble = isWin
-      ? `# Terminal 1 — Launch llama-server (${profile.shortName})\nStop-Process -Name "llama-server" -Force -ErrorAction SilentlyContinue\nSet-Location "${binDir}"\n`
-      : `# Terminal 1 — Launch llama-server (${profile.shortName})\npkill -u "$USER" -9 -f "llama-server" 2>/dev/null || true; fuser -k ${port}/tcp 2>/dev/null || true\ncd "${binDir}"\n`;
+      ? `${lifecycleComment}# Terminal 1 — Launch llama-server (${profile.shortName})\nStop-Process -Name "llama-server" -Force -ErrorAction SilentlyContinue\nSet-Location "${binDir}"\n`
+      : `${lifecycleComment}# Terminal 1 — Launch llama-server (${profile.shortName})\npkill -u "$USER" -9 -f "llama-server" 2>/dev/null || true; fuser -k ${port}/tcp 2>/dev/null || true\ncd "${binDir}"\n`;
 
     return preamble + formatMultiline(cmdLines, profile.os);
   }
@@ -404,6 +491,9 @@
       const teeCmd = isWin
         ? `| Tee-Object -FilePath "${outTarget.fullPath}"`
         : `| tee "${outTarget.fullPath}"`;
+      const killSrv = isWin
+        ? `Stop-Process -Name "llama-server" -Force -ErrorAction SilentlyContinue`
+        : `pkill -u "$USER" -9 -f "llama-server" 2>/dev/null || true`;
 
       const lines = [
         `${profile.llamaBenchBin}`,
@@ -412,8 +502,8 @@
       ];
 
       return (isWin
-        ? `# Direct Native C++ Run (No Server Needed)\n${mkdirCmd}\nSet-Location "${binDir}"\n`
-        : `# Direct Native C++ Run (No Server Needed)\n${mkdirCmd}\ncd "${binDir}"\n`) + formatMultiline(lines, profile.os);
+        ? `# Direct Native C++ Run (No Server Needed — Auto-stops any running llama-server first)\n${killSrv}\n${mkdirCmd}\nSet-Location "${binDir}"\n`
+        : `# Direct Native C++ Run (No Server Needed — Auto-stops any running llama-server first)\n${killSrv}\n${mkdirCmd}\ncd "${binDir}"\n`) + formatMultiline(lines, profile.os);
     }
 
     if (suiteId === "llama_benchy") {
@@ -1370,7 +1460,7 @@
           `cd "${benchRoot}"`,
           `python3 -m venv "${benchRoot}/.venv-aiperf"`,
           `source "${benchRoot}/.venv-aiperf/bin/activate"`,
-          `pip install --upgrade pip setuptools wheel requests tqdm tabulate huggingface_hub`,
+          `pip install --upgrade pip setuptools wheel requests tqdm tabulate`,
           `if [ ! -f "${benchRoot}/llmperf/token_benchmark_ray.py" ]; then rm -rf "${benchRoot}/llmperf"; git clone https://github.com/ray-project/llmperf.git "${benchRoot}/llmperf"; fi`,
           `if [ -f "${benchRoot}/llmperf/pyproject.toml" ]; then sed -i 's/<3.11,\\s*//g; s/,\\s*<3.11//g' "${benchRoot}/llmperf/pyproject.toml"; fi`,
           `if [ -f "${benchRoot}/llmperf/setup.py" ]; then sed -i 's/<3.11,\\s*//g; s/,\\s*<3.11//g' "${benchRoot}/llmperf/setup.py"; fi`,
@@ -1378,7 +1468,7 @@
           `pip install llama-benchy`,
           `pip install ${aipPkg} || pip install aiperf`,
           `python3 -m venv "${benchRoot}/.venv-agentperf"`,
-          `"${benchRoot}/.venv-agentperf/bin/pip" install --upgrade pip setuptools wheel aa-agentperf-local`
+          `"${benchRoot}/.venv-agentperf/bin/pip" install --upgrade pip setuptools wheel agentperf-local`
         ].join("\n")
       });
     } else if (profile.id === "rtx_spark_win_arm64") {
@@ -1409,7 +1499,7 @@
           `  if ($foundPy) { & "$foundPy" -m venv "${benchRoot}\\.venv-aiperf" } elseif (Get-Command py -ErrorAction SilentlyContinue) { py -3.12 -m venv "${benchRoot}\\.venv-aiperf" } else { python -m venv "${benchRoot}\\.venv-aiperf" }`,
           `}`,
           `$venvPy = "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe"`,
-          `& "$venvPy" -m pip install --upgrade pip setuptools wheel requests tqdm tabulate huggingface_hub`,
+          `& "$venvPy" -m pip install --upgrade pip setuptools wheel requests tqdm tabulate`,
           `if (-not (Test-Path "${benchRoot}\\llmperf\\token_benchmark_ray.py")) {`,
           `  if (Get-Command git -ErrorAction SilentlyContinue) {`,
           `    git clone https://github.com/ray-project/llmperf.git "${benchRoot}\\llmperf"`,
@@ -1428,7 +1518,7 @@
           `if (-not (Test-Path "${benchRoot}\\.venv-agentperf\\Scripts\\python.exe")) {`,
           `  if ($foundPy) { & "$foundPy" -m venv "${benchRoot}\\.venv-agentperf" } elseif (Get-Command py -ErrorAction SilentlyContinue) { py -3.12 -m venv "${benchRoot}\\.venv-agentperf" } else { python -m venv "${benchRoot}\\.venv-agentperf" }`,
           `}`,
-          `& "${benchRoot}\\.venv-agentperf\\Scripts\\python.exe" -m pip install --upgrade pip setuptools wheel aa-agentperf-local`
+          `& "${benchRoot}\\.venv-agentperf\\Scripts\\python.exe" -m pip install --upgrade pip setuptools wheel agentperf-local`
         ].join("\n")
       });
     } else {
@@ -1458,7 +1548,7 @@
           `  if ($foundPy) { & "$foundPy" -m venv "${benchRoot}\\.venv-aiperf" } elseif (Get-Command py -ErrorAction SilentlyContinue) { py -3.12 -m venv "${benchRoot}\\.venv-aiperf" } else { python -m venv "${benchRoot}\\.venv-aiperf" }`,
           `}`,
           `$venvPy = "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe"`,
-          `& "$venvPy" -m pip install --upgrade pip setuptools wheel requests tqdm tabulate huggingface_hub`,
+          `& "$venvPy" -m pip install --upgrade pip setuptools wheel requests tqdm tabulate`,
           `if (-not (Test-Path "${benchRoot}\\llmperf\\token_benchmark_ray.py")) {`,
           `  if (Get-Command git -ErrorAction SilentlyContinue) {`,
           `    git clone https://github.com/ray-project/llmperf.git "${benchRoot}\\llmperf"`,
@@ -1479,7 +1569,7 @@
           `if (-not (Test-Path "${benchRoot}\\.venv-agentperf\\Scripts\\python.exe")) {`,
           `  if ($foundPy) { & "$foundPy" -m venv "${benchRoot}\\.venv-agentperf" } elseif (Get-Command py -ErrorAction SilentlyContinue) { py -3.12 -m venv "${benchRoot}\\.venv-agentperf" } else { python -m venv "${benchRoot}\\.venv-agentperf" }`,
           `}`,
-          `& "${benchRoot}\\.venv-agentperf\\Scripts\\python.exe" -m pip install --upgrade pip setuptools wheel aa-agentperf-local`
+          `& "${benchRoot}\\.venv-agentperf\\Scripts\\python.exe" -m pip install --upgrade pip setuptools wheel agentperf-local`
         ].join("\n")
       });
     }
@@ -1496,7 +1586,8 @@
           `$q36Dir = "${modelDir}\\unsloth\\Qwen3.6-35B-A3B-GGUF"`,
           `New-Item -ItemType Directory -Force -Path $q38Dir, $q36Dir | Out-Null`,
           `if (Test-Path "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe") {`,
-          `  & "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe" -m pip install -U huggingface_hub`,
+          `  & "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe" -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('huggingface_hub') else 1)" 2>$null`,
+          `  if ($LASTEXITCODE -ne 0) { & "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe" -m pip install "huggingface_hub<2.0" }`,
           `  & "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe" -c "from huggingface_hub import hf_hub_download; hf_hub_download('unsloth/Qwen3.8-27B-GGUF', 'Qwen3.8-27B-UD-Q4_K_M.gguf', local_dir=r'$q38Dir'); hf_hub_download('unsloth/Qwen3.6-35B-A3B-GGUF', 'Qwen3.6-35B-A3B-UD-Q4_K_M.gguf', local_dir=r'$q36Dir')"`,
           `} else {`,
           `  curl.exe -L -C - "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q4_K_M.gguf" -o "$q38Dir\\Qwen3.8-27B-UD-Q4_K_M.gguf"`,
@@ -1514,7 +1605,7 @@
           `# Conflict-free GGUF Model Downloader (auto-downloads missing models via huggingface_hub or resumable wget)`,
           `mkdir -p "${modelDir}"`,
           `if [ -x "${benchRoot}/.venv-aiperf/bin/python3" ]; then`,
-          `  "${benchRoot}/.venv-aiperf/bin/pip" install -U huggingface_hub`,
+          `  "${benchRoot}/.venv-aiperf/bin/python3" -c "import huggingface_hub" 2>/dev/null || "${benchRoot}/.venv-aiperf/bin/pip" install "huggingface_hub<2.0"`,
           `  "${benchRoot}/.venv-aiperf/bin/python3" -c "from huggingface_hub import hf_hub_download; hf_hub_download('unsloth/Qwen3.8-27B-GGUF', 'Qwen3.8-27B-UD-Q4_K_M.gguf', local_dir='${modelDir}'); hf_hub_download('unsloth/Qwen3.6-35B-A3B-GGUF', 'Qwen3.6-35B-A3B-UD-Q4_K_M.gguf', local_dir='${modelDir}')"`,
           `else`,
           `  wget -c "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q4_K_M.gguf" -O "${modelDir}/Qwen3.8-27B-UD-Q4_K_M.gguf"`,
@@ -1571,6 +1662,9 @@
           `  & "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe" -c "import sys, importlib.util; print('venv Python:', sys.version.split()[0]); [print('[OK]' if importlib.util.find_spec(m) else '[MISSING]', m) for m in ('llama_benchy','aiperf','ray')]"`,
           `} else { Write-Host "[MISSING] ${benchRoot}\\.venv-aiperf (Run Card 02)" }`,
           `if (Test-Path "${benchRoot}\\llmperf\\token_benchmark_ray.py") { Write-Host "[OK] token_benchmark_ray.py" } else { Write-Host "[MISSING] llmperf repo (Run Card 02)" }`,
+          `if ((Test-Path "${benchRoot}\\.venv-agentperf\\Scripts\\python.exe") -and (-not (Test-Path "${benchRoot}\\.venv-agentperf\\Scripts\\agentperf-local.exe"))) {`,
+          `  & "${benchRoot}\\.venv-agentperf\\Scripts\\python.exe" -m pip install --upgrade pip setuptools wheel agentperf-local`,
+          `}`,
           `if (Test-Path "${benchRoot}\\.venv-agentperf\\Scripts\\agentperf-local.exe") { Write-Host "[OK] agentperf-local" } else { Write-Host "[MISSING] ${benchRoot}\\.venv-agentperf (Run Card 02)" }`,
           `Write-Host "=== 5. Cache Cleanup & Port ${port} Availability ==="`,
           `Remove-Item -Recurse -Force "$env:USERPROFILE\\.cache\\llama-benchy" -ErrorAction SilentlyContinue`,
@@ -1852,6 +1946,8 @@
     isSuiteCustomized,
     resolveNamingMode,
     getOutputTarget,
+    getServerConfigSignature,
+    getServerLifecycleInfo,
     buildServerCommand,
     buildSuiteClientCommand,
     buildAllInOnePlaybook,
