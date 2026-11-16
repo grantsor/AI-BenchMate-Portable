@@ -217,17 +217,17 @@
 
     let platformTogglesHtml = "";
     if (profile.id === "rtx_spark_win_arm64") {
-      platformTogglesHtml = `<label class="sb-field-inline">
+      platformTogglesHtml = `<label class="sb-field-inline" data-tip="chk_rtxArmTdigestCompile">
         <input type="checkbox" data-hw-check="rtxArmTdigestCompile" ${state.hardware.rtxArmTdigestCompile ? "checked" : ""} />
         <span>Compile aiperf[tdigest] (requires VS C++ ARM64 build tools)</span>
       </label>`;
     } else if (isDgx) {
       platformTogglesHtml = `
-        <label class="sb-field-inline">
+        <label class="sb-field-inline" data-tip="chk_nonSudoSetup">
           <input type="checkbox" data-hw-check="nonSudoSetup" ${state.hardware.nonSudoSetup ? "checked" : ""} />
           <span>Non-sudo setup (skip python3-dev / crick C extension)</span>
         </label>
-        <label class="sb-field-inline">
+        <label class="sb-field-inline" data-tip="chk_includeVllmInStartAi">
           <input type="checkbox" data-ssh-check="includeVllmInStartAi" ${state.ssh.includeVllmInStartAi ? "checked" : ""} />
           <span>Include vLLM in start-ai restore</span>
         </label>`;
@@ -237,7 +237,7 @@
       .map(
         (c) => `<div class="sb-terminal-wrap">
           <div class="sb-terminal-bar">
-            <span>${esc(c.title)}</span>
+            <span data-tip="${esc(c.id)}">${esc(c.title)}</span>
             <button type="button" class="btn btn-sm" data-copy-setup="${esc(c.id)}">Copy</button>
           </div>
           <pre class="sb-terminal-pre" data-setup-pre="${esc(c.id)}">${E.highlightShell(c.cmd)}</pre>
@@ -259,19 +259,19 @@
         <div class="config-section" style="margin-top:20px; padding-top:16px; border-top:1px solid var(--border-soft);">
           <h3 class="sb-sub-title" style="margin-top:0">DGX Spark Remote SSH &amp; Post-Benchmark Stack</h3>
           <div class="sb-form-grid">
-            <div class="sb-field"><label>SSH User</label><input type="text" class="sb-input" data-ssh-field="user" value="${esc(s.user)}" /></div>
-            <div class="sb-field"><label>SSH Host / IP</label><input type="text" class="sb-input" data-ssh-field="host" value="${esc(s.host)}" /></div>
-            <div class="sb-field"><label>SSH Port</label><input type="number" class="sb-input" data-ssh-field="port" value="${esc(s.port)}" /></div>
-            <div class="sb-field"><label>tmux Session</label><input type="text" class="sb-input" data-ssh-field="tmuxSession" value="${esc(s.tmuxSession)}" /></div>
-            <div class="sb-field"><label>Remote Results Dir</label><input type="text" class="sb-input" data-ssh-field="remoteResultsDir" value="${esc(s.remoteResultsDir)}" /></div>
-            <div class="sb-field"><label>Local Pull Dir</label><input type="text" class="sb-input" data-ssh-field="localPullDir" value="${esc(s.localPullDir)}" /></div>
-            <div class="sb-field"><label>Hermes Server IP</label><input type="text" class="sb-input" data-ssh-field="hermesServerIp" value="${esc(s.hermesServerIp)}" /></div>
+            <div class="sb-field"><label data-tip="ssh_user">SSH User</label><input type="text" class="sb-input" data-ssh-field="user" value="${esc(s.user)}" /></div>
+            <div class="sb-field"><label data-tip="ssh_host">SSH Host / IP</label><input type="text" class="sb-input" data-ssh-field="host" value="${esc(s.host)}" /></div>
+            <div class="sb-field"><label data-tip="ssh_port">SSH Port</label><input type="number" class="sb-input" data-ssh-field="port" value="${esc(s.port)}" /></div>
+            <div class="sb-field"><label data-tip="ssh_tmuxSession">tmux Session</label><input type="text" class="sb-input" data-ssh-field="tmuxSession" value="${esc(s.tmuxSession)}" /></div>
+            <div class="sb-field"><label data-tip="ssh_remoteResultsDir">Remote Results Dir</label><input type="text" class="sb-input" data-ssh-field="remoteResultsDir" value="${esc(s.remoteResultsDir)}" /></div>
+            <div class="sb-field"><label data-tip="ssh_localPullDir">Local Pull Dir</label><input type="text" class="sb-input" data-ssh-field="localPullDir" value="${esc(s.localPullDir)}" /></div>
+            <div class="sb-field"><label data-tip="ssh_hermesServerIp">Hermes Server IP</label><input type="text" class="sb-input" data-ssh-field="hermesServerIp" value="${esc(s.hermesServerIp)}" /></div>
           </div>
           <div class="ssh-stack">${sshCards
             .map(
               (c) => `<div class="sb-terminal-wrap">
                 <div class="sb-terminal-bar">
-                  <span>${esc(c.title)}</span>
+                  <span data-tip="ssh_${esc(c.id)}">${esc(c.title)}</span>
                   <button type="button" class="btn btn-sm" data-copy-ssh="${esc(c.id)}">Copy</button>
                 </div>
                 <pre class="sb-terminal-pre" data-ssh-pre="${esc(c.id)}">${E.highlightShell(c.cmd)}</pre>
@@ -285,14 +285,15 @@
     return `
       <div class="config-section">
         <div class="sb-inline-row" style="justify-content:space-between; margin-bottom:10px;">
-          <h2 class="sb-section-title" style="margin:0">Pre-flight Verification &amp; Environment Setup — ${esc(profile.shortName)}</h2>
+          <h2 class="sb-section-title" style="margin:0" data-tip="sec_setup">Pre-flight Verification &amp; Environment Setup — ${esc(profile.shortName)}</h2>
           <button type="button" class="btn btn-sm btn-primary" data-tab="benchmarks">Continue to Benchmarks &rarr;</button>
         </div>
         <div class="sb-form-grid">
-          <div class="sb-field"><label>Llama Bin Dir</label><input type="text" class="sb-input" data-hw-field="binDir" value="${esc(state.hardware.binDir)}" /></div>
-          <div class="sb-field"><label>Repo Dir</label><input type="text" class="sb-input" data-hw-field="repoDir" value="${esc(state.hardware.repoDir)}" /></div>
-          <div class="sb-field"><label>Bench Root (Venvs &amp; llmperf)</label><input type="text" class="sb-input" data-hw-field="benchRoot" value="${esc(state.hardware.benchRoot)}" /></div>
-          <div class="sb-field"><label>Active Model (.gguf)</label><input type="text" class="sb-input" data-model-field="fullPath" value="${esc(state.model.fullPath)}" /></div>
+          <div class="sb-field"><label data-tip="hw_binDir">Llama Bin Dir</label><input type="text" class="sb-input" data-hw-field="binDir" value="${esc(state.hardware.binDir)}" /></div>
+          <div class="sb-field"><label data-tip="hw_repoDir">Repo Dir</label><input type="text" class="sb-input" data-hw-field="repoDir" value="${esc(state.hardware.repoDir)}" /></div>
+          <div class="sb-field"><label data-tip="hw_benchRoot">Bench Root (Venvs &amp; llmperf)</label><input type="text" class="sb-input" data-hw-field="benchRoot" value="${esc(state.hardware.benchRoot)}" /></div>
+          <div class="sb-field"><label data-tip="hw_resultsDir">Results Dir (Benchmark Outputs)</label><input type="text" class="sb-input" data-hw-field="resultsDir" value="${esc(state.hardware.resultsDir)}" /></div>
+          <div class="sb-field"><label data-tip="model_fullPath">Active Model (.gguf)</label><input type="text" class="sb-input" data-model-field="fullPath" value="${esc(state.model.fullPath)}" /></div>
         </div>
         ${platformTogglesHtml ? `<div class="sb-inline-row" style="margin-top:10px;">${platformTogglesHtml}</div>` : ""}
       </div>
@@ -304,7 +305,7 @@
   /* ---------- Tab 2: 2. Benchmarks ---------- */
   function renderFieldInput(suiteId, field, label, type, val, attrs) {
     return `<div class="sb-field">
-      <label>${esc(label)}</label>
+      <label data-tip="param_${esc(field)}">${esc(label)}</label>
       <input type="${type}" class="sb-input" data-suite-id="${esc(suiteId)}" data-suite-field="${esc(field)}" value="${esc(val)}" ${attrs || ""} />
     </div>`;
   }
@@ -318,15 +319,15 @@
       })
       .join("");
     return `<div class="sb-field">
-      <label>${esc(label)}</label>
+      <label data-tip="param_${esc(field)}">${esc(label)}</label>
       <select class="sb-select" data-suite-id="${esc(suiteId)}" data-suite-field="${esc(field)}">${opts}</select>
     </div>`;
   }
 
   function renderFieldCheck(suiteId, field, label, checked) {
     return `<div class="sb-field">
-      <label>${esc(label)}</label>
-      <label class="sb-field-inline" style="height:32px">
+      <label data-tip="chk_${esc(field)}">${esc(label)}</label>
+      <label class="sb-field-inline" style="height:32px" data-tip="chk_${esc(field)}">
         <input type="checkbox" data-suite-id="${esc(suiteId)}" data-suite-field="${esc(field)}" ${checked ? "checked" : ""} />
         <span>${checked ? "Enabled" : "Disabled"}</span>
       </label>
@@ -369,8 +370,8 @@
       return `
         <div class="sb-inline-row" style="margin-bottom:10px">
           <span style="font-size:12px;font-weight:600;color:var(--text-secondary)">Token Workload Preset:</span>
-          <button type="button" class="sb-chip ${isDefault ? "active" : ""}" data-llmperf-preset="default">Default: 1024 in / 256 out</button>
-          <button type="button" class="sb-chip ${isFast ? "active" : ""}" data-llmperf-preset="fast">Fast: 512 in / 128 out</button>
+          <button type="button" class="sb-chip ${isDefault ? "active" : ""}" data-llmperf-preset="default" data-tip="preset_llmperf_default">Default: 1024 in / 256 out</button>
+          <button type="button" class="sb-chip ${isFast ? "active" : ""}" data-llmperf-preset="fast" data-tip="preset_llmperf_fast">Fast: 512 in / 128 out</button>
         </div>
         <div class="sb-form-grid">${
           renderFieldInput(suiteId, "c", "Server -c", "number", s.c) +
@@ -393,8 +394,8 @@
       return `
         <div class="sb-inline-row" style="margin-bottom:10px">
           <span style="font-size:12px;font-weight:600;color:var(--text-secondary)">Comparator Preset:</span>
-          <button type="button" class="sb-chip ${isDenseVsMoe ? "active" : ""}" data-speedbench-cmp="dense_vs_moe">Dense vs MoE (qwen38 vs qwen36)</button>
-          <button type="button" class="sb-chip ${isStdVs64k ? "active" : ""}" data-speedbench-cmp="std_vs_64k">Standard vs 64K (${esc(slug)} vs ${esc(slug)}_ctx64k)</button>
+          <button type="button" class="sb-chip ${isDenseVsMoe ? "active" : ""}" data-speedbench-cmp="dense_vs_moe" data-tip="cmp_dense_vs_moe">Dense vs MoE (qwen38 vs qwen36)</button>
+          <button type="button" class="sb-chip ${isStdVs64k ? "active" : ""}" data-speedbench-cmp="std_vs_64k" data-tip="cmp_std_vs_64k">Standard vs 64K (${esc(slug)} vs ${esc(slug)}_ctx64k)</button>
         </div>
         <div class="sb-form-grid">${
         renderFieldSelect(suiteId, "contextPreset", "Context Quick Select", presetVal, [
@@ -475,32 +476,32 @@
       .join("");
 
     const multiGpuHtml = profile.supportsMultiGpu
-      ? `<div class="sb-field"><label>Device (-dev)</label><input type="text" class="sb-input" data-hw-field="nvidiaDevice" value="${esc(state.hardware.nvidiaDevice || "")}" /></div>
-         <div class="sb-field"><label>Tensor Split (-ts)</label><input type="text" class="sb-input" data-hw-field="tensorSplit" value="${esc(state.hardware.tensorSplit || "")}" placeholder="e.g. 1,1" /></div>`
+      ? `<div class="sb-field"><label data-tip="hw_nvidiaDevice">Device (-dev)</label><input type="text" class="sb-input" data-hw-field="nvidiaDevice" value="${esc(state.hardware.nvidiaDevice || "")}" /></div>
+         <div class="sb-field"><label data-tip="hw_tensorSplit">Tensor Split (-ts)</label><input type="text" class="sb-input" data-hw-field="tensorSplit" value="${esc(state.hardware.tensorSplit || "")}" placeholder="e.g. 1,1" /></div>`
       : "";
 
     return `<div class="sb-drawer">
       <div class="sb-form-grid">
-        <div class="sb-field"><label>Llama Bin Dir</label><input type="text" class="sb-input" data-hw-field="binDir" value="${esc(state.hardware.binDir)}" /></div>
-        <div class="sb-field"><label>Repo Dir</label><input type="text" class="sb-input" data-hw-field="repoDir" value="${esc(state.hardware.repoDir)}" /></div>
-        <div class="sb-field"><label>Bench Root</label><input type="text" class="sb-input" data-hw-field="benchRoot" value="${esc(state.hardware.benchRoot)}" /></div>
-        <div class="sb-field"><label>Results Dir</label><input type="text" class="sb-input" data-hw-field="resultsDir" value="${esc(state.hardware.resultsDir)}" /></div>
-        <div class="sb-field"><label>Model Alias</label><input type="text" class="sb-input" data-model-field="alias" value="${esc(state.model.alias)}" /></div>
-        <div class="sb-field"><label>Output Slug</label><input type="text" class="sb-input" data-model-field="slug" value="${esc(state.model.slug)}" /></div>
-        <div class="sb-field"><label>Tokenizer ID</label><input type="text" class="sb-input" data-model-field="tokenizer" value="${esc(state.model.tokenizer)}" /></div>
-        <div class="sb-field"><label>Weight (GB)</label><input type="number" step="0.1" class="sb-input" data-model-field="weightGb" value="${esc(state.model.weightGb)}" /></div>
-        <div class="sb-field"><label>Params (B)</label><input type="number" step="0.5" class="sb-input" data-model-field="paramsB" value="${esc(state.model.paramsB)}" /></div>
-        <div class="sb-field"><label>Server Host</label><input type="text" class="sb-input" data-hw-field="host" value="${esc(state.hardware.host)}" /></div>
-        <div class="sb-field"><label>Server Port</label><input type="number" class="sb-input" data-hw-field="port" value="${esc(state.hardware.port)}" /></div>
+        <div class="sb-field"><label data-tip="hw_binDir">Llama Bin Dir</label><input type="text" class="sb-input" data-hw-field="binDir" value="${esc(state.hardware.binDir)}" /></div>
+        <div class="sb-field"><label data-tip="hw_repoDir">Repo Dir</label><input type="text" class="sb-input" data-hw-field="repoDir" value="${esc(state.hardware.repoDir)}" /></div>
+        <div class="sb-field"><label data-tip="hw_benchRoot">Bench Root</label><input type="text" class="sb-input" data-hw-field="benchRoot" value="${esc(state.hardware.benchRoot)}" /></div>
+        <div class="sb-field"><label data-tip="hw_resultsDir">Results Dir</label><input type="text" class="sb-input" data-hw-field="resultsDir" value="${esc(state.hardware.resultsDir)}" /></div>
+        <div class="sb-field"><label data-tip="model_alias">Model Alias</label><input type="text" class="sb-input" data-model-field="alias" value="${esc(state.model.alias)}" /></div>
+        <div class="sb-field"><label data-tip="model_slug">Output Slug</label><input type="text" class="sb-input" data-model-field="slug" value="${esc(state.model.slug)}" /></div>
+        <div class="sb-field"><label data-tip="model_tokenizer">Tokenizer ID</label><input type="text" class="sb-input" data-model-field="tokenizer" value="${esc(state.model.tokenizer)}" /></div>
+        <div class="sb-field"><label data-tip="model_weightGb">Weight (GB)</label><input type="number" step="0.1" class="sb-input" data-model-field="weightGb" value="${esc(state.model.weightGb)}" /></div>
+        <div class="sb-field"><label data-tip="model_paramsB">Params (B)</label><input type="number" step="0.5" class="sb-input" data-model-field="paramsB" value="${esc(state.model.paramsB)}" /></div>
+        <div class="sb-field"><label data-tip="hw_host">Server Host</label><input type="text" class="sb-input" data-hw-field="host" value="${esc(state.hardware.host)}" /></div>
+        <div class="sb-field"><label data-tip="hw_port">Server Port</label><input type="number" class="sb-input" data-hw-field="port" value="${esc(state.hardware.port)}" /></div>
         <div class="sb-field">
-          <label>Client --model Flag</label>
+          <label data-tip="model_clientModelMode">Client --model Flag</label>
           <select class="sb-select" data-model-field="clientModelMode">
             <option value="alias" ${state.model.clientModelMode === "alias" ? "selected" : ""}>Alias (--alias)</option>
             <option value="fullPath" ${state.model.clientModelMode === "fullPath" ? "selected" : ""}>Full GGUF Path</option>
           </select>
         </div>
         <div class="sb-field">
-          <label>Filename Naming</label>
+          <label data-tip="naming_mode">Filename Naming</label>
           <select class="sb-select" data-naming-mode>
             <option value="auto" ${state.naming.mode === "auto" ? "selected" : ""}>Auto (Classic on Default, Stamped on Edit)</option>
             <option value="stamped" ${state.naming.mode === "stamped" ? "selected" : ""}>Always Stamped (_c32k_fp16)</option>
@@ -529,13 +530,13 @@
 
     const amdControls =
       profile.id === "amd_win_x64"
-        ? `<label class="sb-field-inline">Backend
+        ? `<label class="sb-field-inline" data-tip="hw_amdBackend"><span>Backend</span>
              <select class="sb-select" data-action="change-amd-backend">
                <option value="vulkan" ${state.hardware.amdBackend === "vulkan" ? "selected" : ""}>Vulkan</option>
                <option value="rocm" ${state.hardware.amdBackend === "rocm" ? "selected" : ""}>ROCm HIP</option>
              </select>
            </label>
-           <label class="sb-field-inline">
+           <label class="sb-field-inline" data-tip="chk_amdEnableFa">
              <input type="checkbox" data-hw-check="amdEnableFa" ${state.hardware.amdEnableFa ? "checked" : ""} />
              <span>Enable -fa 1 on Vulkan</span>
            </label>`
@@ -587,10 +588,10 @@
 
       return `<div class="suite-card" data-suite-card="${esc(meta.id)}">
         <div class="suite-card-header">
-          <div class="suite-card-title">
+          <div class="suite-card-title" data-tip="suite_${esc(meta.id)}">
             <span class="suite-card-num">${esc(meta.index)}</span>
             <span>${esc(meta.title)}</span>
-            <code class="suite-output-tag" data-output-tag="${esc(meta.id)}">-&gt; ${esc(target.leaf)}</code>
+            <code class="suite-output-tag" data-output-tag="${esc(meta.id)}" data-tip="hw_resultsDir">-&gt; ${esc(target.leaf)}</code>
             ${modBadge}
           </div>
           <div class="suite-card-actions">
@@ -618,11 +619,11 @@
     return `
       <div class="config-section">
         <div class="config-bar">
-          <label class="sb-field-inline">Platform
+          <label class="sb-field-inline" data-tip="hw_profile"><span>Platform</span>
             <select class="sb-select" data-action="change-profile">${profileOpts}</select>
           </label>
           ${amdControls}
-          <label class="sb-field-inline">VRAM (GB)
+          <label class="sb-field-inline" data-tip="hw_vramGb"><span>VRAM (GB)</span>
             <input type="number" class="sb-input" style="width:76px" data-hw-field="vramGb" value="${esc(state.hardware.vramGb)}" />
           </label>
           <div class="sb-pill-row">${quickChips}${customChips}</div>
@@ -632,10 +633,13 @@
         </div>
 
         <div class="config-model-row">
-          <label class="sb-field-inline" style="flex:1; min-width:260px;">Model (.gguf)
+          <label class="sb-field-inline" style="flex:1.3; min-width:240px;" data-tip="model_fullPath"><span>Model (.gguf)</span>
             <input type="text" class="sb-input sb-input-wide" data-model-field="fullPath" value="${esc(state.model.fullPath)}" />
           </label>
           <button type="button" class="btn btn-sm btn-outline" data-action="add-custom-model">+ Add Model</button>
+          <label class="sb-field-inline" style="flex:1; min-width:220px;" data-tip="hw_resultsDir"><span>Results Dir</span>
+            <input type="text" class="sb-input sb-input-wide" data-hw-field="resultsDir" value="${esc(state.hardware.resultsDir)}" />
+          </label>
         </div>
 
         ${renderPathsDrawer()}
@@ -654,11 +658,12 @@
       <div class="suite-list">${suiteCardsHtml}</div>
 
       <div class="playbook-footer">
-        <span class="playbook-footer-title">Playbook (${esc(profile.shortName)} · ${esc(state.model.alias || state.model.slug)})</span>
+        <span class="playbook-footer-title" data-tip="sec_playbook">Playbook (${esc(profile.shortName)} · ${esc(state.model.alias || state.model.slug)})</span>
         <div class="playbook-footer-actions">
-          <button type="button" class="btn btn-sm ${missingOnly ? "btn-primary" : ""}" data-action="toggle-playbook-missing">
-            ${missingOnly ? "Missing / Incomplete Runs Only: ON" : "Missing / Incomplete Runs Only"}
-          </button>
+          <label class="sb-field-inline" data-tip="chk_playbookMissingOnly" style="cursor:pointer;">
+            <input type="checkbox" data-action="check-playbook-missing" ${missingOnly ? "checked" : ""} />
+            <span>Missing / Incomplete Runs Only</span>
+          </label>
           <button type="button" class="btn btn-sm btn-outline" data-action="copy-playbook">Copy Playbook</button>
           <button type="button" class="btn btn-sm btn-primary" data-action="download-playbook">Download ${esc(playbookExt)}</button>
         </div>
@@ -750,8 +755,8 @@
       const statusLabel = item ? item.label : "NOT AUDITED";
       const subText = item ? item.detail : "Run folder audit or drop files above.";
       return `<tr>
-        <td><strong>${esc(meta.index)} · ${esc(meta.title)}</strong></td>
-        <td><code>${esc(target.leaf)}</code></td>
+        <td><strong data-tip="suite_${esc(meta.id)}">${esc(meta.index)} · ${esc(meta.title)}</strong></td>
+        <td><code data-tip="hw_resultsDir">${esc(target.leaf)}</code></td>
         <td>
           <span class="sb-badge ${badgeClass}">${esc(statusLabel)}</span>
           <div class="sb-audit-sub">${esc(subText)}</div>
@@ -811,14 +816,10 @@
     return `
       <div class="config-section">
         <div class="sb-inline-row">
-          <h2 class="sb-section-title" style="margin:0">Results Folder Audit</h2>
-          <label class="btn btn-sm btn-primary" style="cursor:pointer">
+          <h2 class="sb-section-title" style="margin:0" data-tip="sec_audit">Results Folder Audit</h2>
+          <label class="btn btn-sm btn-primary" style="cursor:pointer" data-tip="hw_resultsDir">
             Select Folder
             <input type="file" id="audit-dir-input" webkitdirectory directory multiple style="display:none" />
-          </label>
-          <label class="btn btn-sm btn-outline" style="cursor:pointer">
-            Select Files
-            <input type="file" id="audit-files-input" multiple accept=".md,.json,.log" style="display:none" />
           </label>
           <button type="button" class="btn btn-sm" data-action="toggle-deep-audit">
             Terminal Audit Script ${state.ui.showDeepAuditScript ? "&#9652;" : "&#9662;"}
@@ -827,7 +828,13 @@
           ${Object.keys(state.audit.items || {}).length ? `<button type="button" class="btn btn-sm btn-danger" data-action="clear-audit">Clear Audit</button>` : ""}
         </div>
 
-        <div class="sb-dropzone" id="audit-dropzone">Drop a benchmark results folder or .md / .json / .log files here</div>
+        <div class="sb-results-folder-bar">
+          <span data-tip="hw_resultsDir"><strong>Default Results Folder:</strong></span>
+          <code id="results-dir-code">${esc(state.hardware.resultsDir)}</code>
+          <button type="button" class="btn btn-sm" data-action="copy-results-dir">Copy Path</button>
+        </div>
+
+        <div class="sb-dropzone" id="audit-dropzone">Drop your benchmark results folder (${esc(state.hardware.resultsDir)}) here</div>
 
         ${deepAuditBox}
 
@@ -841,7 +848,7 @@
 
       <div>
         <div class="sb-inline-row">
-          <h2 class="sb-section-title" style="margin:0">Parsed Results Comparison</h2>
+          <h2 class="sb-section-title" style="margin:0" data-tip="sec_compare">Parsed Results Comparison</h2>
           <label class="btn btn-sm btn-outline" style="cursor:pointer">
             Upload .md / .json
             <input type="file" id="compare-files-input" multiple accept=".md,.json" style="display:none" />
@@ -1248,6 +1255,10 @@
       copyText(E.buildDeepAuditScript(state), t);
       return;
     }
+    if (t.dataset.action === "copy-results-dir") {
+      copyText(state.hardware.resultsDir, t);
+      return;
+    }
     if (t.dataset.action === "toggle-charts") {
       state.ui.showCharts = !state.ui.showCharts;
       persistState();
@@ -1307,6 +1318,12 @@
     if (t.dataset.action === "change-amd-backend") {
       state.hardware.amdBackend = t.value;
       state.hardware.binDir = t.value === "rocm" ? "C:\\llama.cpp\\rocm" : "C:\\llama.cpp\\vulkan";
+      persistState();
+      renderApp();
+      return;
+    }
+    if (t.dataset.action === "check-playbook-missing") {
+      state.ui.playbookMissingOnly = t.checked;
       persistState();
       renderApp();
       return;
@@ -1444,6 +1461,66 @@
     } else if (ev.dataTransfer?.files?.length) {
       await handleAuditFiles(ev.dataTransfer.files);
     }
+  });
+
+  /* ---------- Floating Hover Tooltip Popup ---------- */
+  let tipEl = null;
+  function ensureTooltipEl() {
+    if (tipEl) return tipEl;
+    tipEl = document.getElementById("sb-floating-tooltip");
+    if (!tipEl) {
+      tipEl = document.createElement("div");
+      tipEl.id = "sb-floating-tooltip";
+      tipEl.className = "sb-floating-tooltip";
+      tipEl.setAttribute("role", "tooltip");
+      document.body.appendChild(tipEl);
+    }
+    return tipEl;
+  }
+
+  function showTooltipFor(targetEl) {
+    if (!targetEl) return;
+    const key = targetEl.getAttribute("data-tip");
+    const info = key && D.HELP_TOOLTIPS ? D.HELP_TOOLTIPS[key] : null;
+    if (!info) return;
+
+    const el = ensureTooltipEl();
+    el.innerHTML = `
+      <div class="sb-tip-title">${esc(info.title)}</div>
+      <div class="sb-tip-desc">${esc(info.desc)}</div>
+      ${info.rec ? `<div class="sb-tip-rec">${esc(info.rec)}</div>` : ""}
+    `;
+    el.classList.add("visible");
+
+    if (typeof targetEl.getBoundingClientRect === "function") {
+      const rect = targetEl.getBoundingClientRect();
+      const vw = global.innerWidth || 1200;
+      const vh = global.innerHeight || 800;
+      const tipW = 360;
+      const tipH = el.offsetHeight || 110;
+      let left = Math.max(10, Math.min(rect.left, vw - tipW - 14));
+      let top = rect.bottom + 8;
+      if (top + tipH > vh - 10 && rect.top > tipH + 16) {
+        top = rect.top - tipH - 8;
+      }
+      el.style.left = `${Math.round(left)}px`;
+      el.style.top = `${Math.round(top)}px`;
+    }
+  }
+
+  function hideTooltip() {
+    if (tipEl) tipEl.classList.remove("visible");
+  }
+
+  document.addEventListener("mouseover", (ev) => {
+    const t = ev.target && ev.target.closest ? ev.target.closest("[data-tip]") : null;
+    if (t) showTooltipFor(t);
+    else hideTooltip();
+  });
+
+  document.addEventListener("mouseout", (ev) => {
+    const related = ev.relatedTarget && ev.relatedTarget.closest ? ev.relatedTarget.closest("[data-tip]") : null;
+    if (!related) hideTooltip();
   });
 
   function init() {
