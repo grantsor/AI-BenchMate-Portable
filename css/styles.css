@@ -1103,6 +1103,65 @@ body.pause-animations .sb-floating-tooltip {
   color: var(--text-primary);
 }
 
+/* ---------- Model Folder Scan & Discovery UI ---------- */
+.btn-xs {
+  padding: 3px 9px;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.sb-model-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.sb-model-banner {
+  margin-top: 10px;
+  margin-bottom: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.sb-model-banner-text {
+  flex: 1 1 320px;
+}
+
+.sb-model-banner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.sb-banner-ok {
+  background: var(--success-bg);
+  border: 1px solid rgba(21, 128, 61, 0.35);
+  color: var(--text-primary);
+}
+
+.sb-banner-info {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.sb-chip.is-found {
+  border-color: rgba(21, 128, 61, 0.45);
+}
+
+.sb-chip.is-missing {
+  border-color: var(--warn-border);
+  opacity: 0.9;
+}
+
 @media (max-width: 720px) {
   .sb-container { padding: 0 12px; }
   .sb-card { padding: 14px; }

@@ -99,32 +99,330 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
+  function normalizePathCmp(v) {
+    return String(v || "").trim().replace(/^["']+|["']+$/g, "").toLowerCase();
+  }
+
+  function getModelBuckets() {
+    const discoveredModels = state.discoveredModels || [];
+    const scan = state.modelScan || {};
+    const qwen38Match = scan.qwen38Match || null;
+    const qwen36Match = scan.qwen36Match || null;
+    const scanStatus = scan.status || "idle";
+
+    const quickModelChoices = D.QUICK_MODELS.map((m) => {
+      const match = m.id === "qwen38_27b" ? qwen38Match : m.id === "qwen36_35b_moe" ? qwen36Match : null;
+      if (match) {
+        return {
+          ...m,
+          fullPath: match.fullPath,
+          filename: match.filename || m.filename,
+          relativeWin: match.relativeWin || m.relativeWin,
+          relativeLinux: match.relativeLinux || m.relativeLinux,
+          weightGb: Number(match.weightGb) || m.weightGb,
+          paramsB: Number(match.paramsB) || m.paramsB,
+          tokenizer: match.tokenizer || m.tokenizer,
+          fromScan: true,
+          scanFound: true
+        };
+      }
+      return {
+        ...m,
+        scanMissing: scanStatus === "partial" || scanStatus === "empty"
+      };
+    });
+
+    const extraDiscoveredModels = discoveredModels.filter((m) => {
+      const p = normalizePathCmp(m.fullPath);
+      if (qwen38Match && p === normalizePathCmp(qwen38Match.fullPath)) return false;
+      if (qwen36Match && p === normalizePathCmp(qwen36Match.fullPath)) return false;
+      if ((state.customModels || []).some((cm) => normalizePathCmp(cm.fullPath) === p)) return false;
+      return true;
+    });
+
+    return {
+      discoveredModels,
+      qwen38Match,
+      qwen36Match,
+      scanStatus,
+      quickModelChoices,
+      extraDiscoveredModels,
+      allModels: [...quickModelChoices, ...extraDiscoveredModels, ...(state.customModels || [])]
+    };
+  }
+
   function allModelChoices() {
-    return [...D.QUICK_MODELS, ...(state.customModels || [])];
+    return getModelBuckets().allModels;
+  }
+
+  function resolveModelChoicePath(m, hw) {
+    const h = hw || state.hardware;
+    if (m.fullPath) return m.fullPath;
+    const prof = D.HARDWARE_PROFILES[h.profileId] || D.HARDWARE_PROFILES.rtx_spark_win_arm64;
+    const isWin = prof.os === "windows";
+    const sep = isWin ? "\\" : "/";
+    const root = E.stripTrailingSep(h.modelsDir || prof.defaultModelsDir);
+    const rel = String(isWin ? (m.relativeWin || m.filename || m.relativeLinux) : (m.relativeLinux || m.filename || m.relativeWin) || "").replace(/^[\\/]+/, "");
+    return root + sep + rel;
+  }
+
+  function isModelChoiceActive(m) {
+    const choices = allModelChoices();
+    const activeCmp = normalizePathCmp(state.model.fullPath);
+    const hasExact = choices.some((item) => normalizePathCmp(resolveModelChoicePath(item)) === activeCmp);
+    if (hasExact) {
+      return normalizePathCmp(resolveModelChoicePath(m)) === activeCmp;
+    }
+    return !m.fromScan && (state.model.slug === m.slug || state.model.alias === m.alias);
   }
 
   function applyQuickModel(modelObj) {
-    const profile = D.HARDWARE_PROFILES[state.hardware.profileId];
+    const profile = D.HARDWARE_PROFILES[state.hardware.profileId] || D.HARDWARE_PROFILES.rtx_spark_win_arm64;
     const isWin = profile.os === "windows";
     const sep = isWin ? "\\" : "/";
-    const baseDir = state.model.baseDir || profile.defaultModelsDir;
+    const cleanRoot = E.stripTrailingSep(state.hardware.modelsDir || profile.defaultModelsDir);
     const rel = isWin
       ? modelObj.relativeWin || modelObj.filename || modelObj.relativeLinux
       : modelObj.relativeLinux || modelObj.filename || modelObj.relativeWin;
     const cleanRel = String(rel || "").replace(/^[\\/]+/, "");
-    const cleanBase = String(baseDir || profile.defaultModelsDir).replace(/[\\/]+$/, "");
-    const fullPath = modelObj.fullPath
-      ? modelObj.fullPath
-      : cleanBase + sep + cleanRel;
+    const fullPath = modelObj.fullPath ? E.cleanUserPath(modelObj.fullPath) : cleanRoot + sep + cleanRel;
+    const parsed = E.parseModelPath(fullPath, cleanRoot);
 
-    state.model.fullPath = fullPath;
-    state.model.baseDir = cleanBase;
-    state.model.filename = cleanRel.split(/[\\/]/).pop() || cleanRel;
-    state.model.alias = modelObj.alias;
-    state.model.slug = modelObj.slug;
-    state.model.tokenizer = modelObj.tokenizer;
-    state.model.weightGb = Number(modelObj.weightGb) || 15.8;
-    state.model.paramsB = Number(modelObj.paramsB) || 27;
+    state.model.fullPath = parsed.fullPath || fullPath;
+    state.model.baseDir = cleanRoot;
+    state.model.filename = parsed.filename || cleanRel.split(/[\\/]/).pop() || cleanRel;
+    state.model.alias = modelObj.alias || parsed.alias;
+    state.model.slug = modelObj.slug || parsed.slug;
+    state.model.tokenizer = modelObj.tokenizer || parsed.tokenizer;
+    state.model.weightGb = Number(modelObj.weightGb) || parsed.weightGb || 15.8;
+    state.model.paramsB = Number(modelObj.paramsB) || parsed.paramsB || 27;
+  }
+
+  function applyModelsDirChange(rawInput, applyInfer) {
+    const profile = D.HARDWARE_PROFILES[state.hardware.profileId] || D.HARDWARE_PROFILES.rtx_spark_win_arm64;
+    const sep = profile.os === "windows" ? "\\" : "/";
+    const cleaned = E.cleanUserPath(rawInput);
+    const oldRoot = E.stripTrailingSep(state.hardware.modelsDir || profile.defaultModelsDir);
+
+    if (applyInfer || /\.gguf$/i.test(cleaned)) {
+      const inferred = E.inferModelsRootFromInput(cleaned, oldRoot, profile.os);
+      const newRoot = inferred.modelsDir || E.stripTrailingSep(cleaned);
+      const nextFull = !inferred.isDirectoryOnly && /\.gguf$/i.test(inferred.cleanPath)
+        ? inferred.cleanPath
+        : E.reRootModelPath(oldRoot, newRoot, state.model.fullPath, sep);
+      const parsed = E.parseModelPath(nextFull, newRoot);
+      state.hardware.modelsDir = newRoot;
+      Object.assign(state.model, parsed, { baseDir: newRoot });
+      state.discoveredModels = (state.discoveredModels || []).map((dm) => ({
+        ...dm,
+        fullPath: E.reRootModelPath(oldRoot, newRoot, dm.fullPath, sep)
+      }));
+      return { inferTriggered: true };
+    }
+
+    const newRoot = E.stripTrailingSep(cleaned);
+    if (!newRoot) {
+      state.hardware.modelsDir = "";
+      return { inferTriggered: false };
+    }
+    const nextFull = E.reRootModelPath(oldRoot, newRoot, state.model.fullPath, sep);
+    const parsed = E.parseModelPath(nextFull, newRoot);
+    state.hardware.modelsDir = newRoot;
+    Object.assign(state.model, parsed, { baseDir: newRoot });
+    state.discoveredModels = (state.discoveredModels || []).map((dm) => ({
+      ...dm,
+      fullPath: E.reRootModelPath(oldRoot, newRoot, dm.fullPath, sep)
+    }));
+    return { inferTriggered: false };
+  }
+
+  function applyModelPathChange(rawInput, inferFolderIfNeeded) {
+    const profile = D.HARDWARE_PROFILES[state.hardware.profileId] || D.HARDWARE_PROFILES.rtx_spark_win_arm64;
+    const sep = profile.os === "windows" ? "\\" : "/";
+    const cleaned = E.cleanUserPath(rawInput);
+    const currentRoot = E.stripTrailingSep(state.hardware.modelsDir || profile.defaultModelsDir);
+
+    if (inferFolderIfNeeded && cleaned && !/\.gguf$/i.test(cleaned)) {
+      const inferred = E.inferModelsRootFromInput(cleaned, currentRoot, profile.os);
+      if (inferred.isDirectoryOnly && inferred.modelsDir) {
+        const newRoot = inferred.modelsDir;
+        const nextFull = E.reRootModelPath(currentRoot, newRoot, state.model.fullPath, sep);
+        const parsed = E.parseModelPath(nextFull, newRoot);
+        state.hardware.modelsDir = newRoot;
+        Object.assign(state.model, parsed, { baseDir: newRoot });
+        state.modelScan = {
+          ...(state.modelScan || {}),
+          status: state.modelScan?.status || "idle",
+          note: `Folder path detected -> updated Models Root Folder to "${newRoot}". Click "Scan \\models\\ Folder" to inspect GGUF files inside.`
+        };
+        return { folderInferred: true };
+      }
+    }
+
+    if (!/\.gguf$/i.test(cleaned)) {
+      state.model.fullPath = cleaned;
+      return { folderInferred: false };
+    }
+
+    const inferred = E.inferModelsRootFromInput(cleaned, currentRoot, profile.os);
+    const nextRoot = inferred.modelsDir || currentRoot;
+    const parsed = E.parseModelPath(cleaned, nextRoot);
+    state.hardware.modelsDir = nextRoot;
+    Object.assign(state.model, parsed, { baseDir: nextRoot });
+    return { folderInferred: false, rootUpdated: nextRoot !== currentRoot };
+  }
+
+  function handleModelsDirScan(fileList) {
+    if (!fileList || !fileList.length) return;
+    const scan = E.scanModelFolderEntries(fileList, state);
+    const activeCmp = normalizePathCmp(state.model.fullPath);
+    const exactInScan = scan.foundModels.find((m) => normalizePathCmp(m.fullPath) === activeCmp);
+    let targetMatch = exactInScan || null;
+    if (!targetMatch) {
+      if (/qwen3\.?8/i.test(state.model.slug || state.model.alias || "") && scan.qwen38Match) {
+        targetMatch = scan.qwen38Match;
+      } else if (/qwen3\.?6/i.test(state.model.slug || state.model.alias || "") && scan.qwen36Match) {
+        targetMatch = scan.qwen36Match;
+      } else if (!exactInScan && scan.foundModels.length > 0 && !scan.qwen38Found && !scan.qwen36Found) {
+        targetMatch = scan.foundModels[0];
+      }
+    }
+    if (targetMatch) {
+      const root = E.stripTrailingSep(state.hardware.modelsDir);
+      const parsed = E.parseModelPath(targetMatch.fullPath, root);
+      Object.assign(state.model, parsed, {
+        baseDir: root || parsed.baseDir,
+        alias: targetMatch.alias || parsed.alias,
+        slug: targetMatch.slug || parsed.slug,
+        tokenizer: targetMatch.tokenizer || parsed.tokenizer,
+        weightGb: Number(targetMatch.weightGb) || parsed.weightGb,
+        paramsB: Number(targetMatch.paramsB) || parsed.paramsB
+      });
+    }
+    state.discoveredModels = scan.foundModels;
+    state.modelScan = {
+      status: scan.status,
+      note: scan.note,
+      scannedRootName: scan.scannedRootName,
+      scannedAt: scan.scannedAt,
+      qwen38Found: scan.qwen38Found,
+      qwen36Found: scan.qwen36Found,
+      qwen38Match: scan.qwen38Match,
+      qwen36Match: scan.qwen36Match,
+      skippedProjectors: scan.skippedProjectors
+    };
+    persistState();
+    renderApp();
+  }
+
+  function handleSingleModelPick(fileList) {
+    const file = fileList && fileList[0];
+    if (!file) return;
+    const picked = E.resolvePickedModelFile(file, state);
+    if (!picked) return;
+    const root = E.stripTrailingSep(picked.baseDir || state.hardware.modelsDir);
+    const parsed = E.parseModelPath(picked.fullPath, root);
+    state.model.fullPath = parsed.fullPath || picked.fullPath;
+    state.model.baseDir = picked.baseDir || state.hardware.modelsDir;
+    state.model.filename = picked.filename || parsed.filename;
+    state.model.alias = picked.alias || parsed.alias;
+    state.model.slug = picked.slug || parsed.slug;
+    state.model.tokenizer = picked.tokenizer || parsed.tokenizer;
+    state.model.paramsB = Number(picked.paramsB) || parsed.paramsB;
+    state.model.weightGb = Number(picked.weightGb) || parsed.weightGb;
+
+    const existingDiscovered = state.discoveredModels || [];
+    const alreadyListed = existingDiscovered.some((d) => normalizePathCmp(d.fullPath) === normalizePathCmp(state.model.fullPath));
+    if (!alreadyListed) {
+      existingDiscovered.push({
+        id: "picked_" + (state.model.slug || Date.now()),
+        label: state.model.alias,
+        alias: state.model.alias,
+        slug: state.model.slug,
+        fullPath: state.model.fullPath,
+        filename: state.model.filename,
+        tokenizer: state.model.tokenizer,
+        paramsB: state.model.paramsB,
+        weightGb: state.model.weightGb,
+        fromScan: true
+      });
+      state.discoveredModels = existingDiscovered;
+    }
+    state.modelScan = {
+      ...(state.modelScan || {}),
+      status: state.modelScan?.status && state.modelScan.status !== "idle" ? state.modelScan.status : "picked",
+      note: picked.note || `Selected GGUF file: ${state.model.fullPath}`
+    };
+    persistState();
+    renderApp();
+  }
+
+  function renderModelStatusBannerHtml(compact) {
+    const scan = state.modelScan || {};
+    const status = scan.status || "idle";
+    const foundCount = (state.discoveredModels || []).length;
+    const isSetup = (state.ui.activeTab || "setup") === "setup";
+
+    if (status === "empty") {
+      return `<div class="sb-banner sb-banner-danger sb-model-banner" role="status">
+        <div class="sb-model-banner-text">
+          <strong>[NOT FOUND] No runnable GGUF models found${scan.scannedRootName ? ` in "${esc(scan.scannedRootName)}"` : ""}.</strong>
+          <span>${esc(scan.note || "Run Card 03 in Setup to download missing Qwen3.8-27B & Qwen3.6-35B-A3B models.")}</span>
+        </div>
+        <div class="sb-model-banner-actions">
+          ${!isSetup ? `<button type="button" class="btn btn-xs btn-primary" data-action="jump-setup-models">Go to Card 03 Download</button>` : ""}
+          <button type="button" class="btn btn-xs btn-outline" data-action="clear-model-scan">Dismiss</button>
+        </div>
+      </div>`;
+    }
+
+    if (status === "partial") {
+      const missingList = [
+        !scan.qwen38Found ? "Qwen3.8-27B" : null,
+        !scan.qwen36Found ? "Qwen3.6-35B-A3B" : null
+      ].filter(Boolean);
+      return `<div class="sb-banner sb-banner-warn sb-model-banner" role="status">
+        <div class="sb-model-banner-text">
+          <strong>[PARTIAL: ${foundCount} GGUF${foundCount === 1 ? "" : "s"}] ${missingList.length ? `Missing: ${esc(missingList.join(", "))}.` : "Found local models."}</strong>
+          <span>${esc(scan.note || "")}</span>
+        </div>
+        <div class="sb-model-banner-actions">
+          ${!isSetup && missingList.length ? `<button type="button" class="btn btn-xs btn-primary" data-action="jump-setup-models">Download Missing (Card 03)</button>` : ""}
+          <button type="button" class="btn btn-xs btn-outline" data-action="clear-model-scan">Clear Scan</button>
+        </div>
+      </div>`;
+    }
+
+    if (status === "ok") {
+      return `<div class="sb-banner sb-banner-ok sb-model-banner" role="status">
+        <div class="sb-model-banner-text">
+          <strong>[FOUND: ${foundCount} GGUF${foundCount === 1 ? "" : "s"}]</strong>
+          <span>${esc(scan.note || "Qwen3.8-27B & Qwen3.6-35B-A3B detected and integrated into benchmark selectors.")}</span>
+        </div>
+        <div class="sb-model-banner-actions">
+          <button type="button" class="btn btn-xs btn-outline" data-action="clear-model-scan">Clear Scan</button>
+        </div>
+      </div>`;
+    }
+
+    if (status === "picked" || scan.note) {
+      return `<div class="sb-banner sb-banner-ok sb-model-banner" role="status">
+        <div class="sb-model-banner-text">
+          <strong>[MODEL PATH]</strong> <span>${esc(scan.note || "")}</span>
+        </div>
+        <div class="sb-model-banner-actions">
+          <button type="button" class="btn btn-xs btn-outline" data-action="trigger-scan-models-dir">Scan \\models\\ Folder</button>
+          <button type="button" class="btn btn-xs btn-outline" data-action="clear-model-scan">Dismiss</button>
+        </div>
+      </div>`;
+    }
+
+    if (compact) return "";
+    return `<div class="sb-banner sb-banner-info sb-model-banner" role="status">
+      <div class="sb-model-banner-text">
+        <strong>Route 1 (Recommended):</strong> Click <code>Scan \\models\\ Folder</code> and select your LM Studio <code>models</code> folder to auto-detect Qwen3.8, Qwen3.6, and all other <code>.gguf</code> models in subfolders — or use <code>Select .gguf File</code>. If skipped, Card 03 scans your folder first and downloads only missing files.
+      </div>
+    </div>`;
   }
 
   function switchHardwareProfile(newProfileId) {
@@ -132,25 +430,46 @@
     const nextProfile = D.HARDWARE_PROFILES[newProfileId];
     if (!nextProfile) return;
 
+    const sameOs = prevProfile.os === nextProfile.os;
+    const nextModelsDir = sameOs
+      ? E.stripTrailingSep(state.hardware.modelsDir || nextProfile.defaultModelsDir)
+      : nextProfile.defaultModelsDir;
+
     state.hardware.profileId = newProfileId;
     state.hardware.vramGb = nextProfile.defaultVramGb;
     state.hardware.binDir = nextProfile.defaultBinDir;
     state.hardware.repoDir = nextProfile.defaultRepoDir;
     state.hardware.benchRoot = nextProfile.defaultBenchRoot;
     state.hardware.resultsDir = nextProfile.defaultResultsDir;
+    state.hardware.modelsDir = nextModelsDir;
     state.hardware.nvidiaDevice = nextProfile.deviceFlag || "CUDA0";
 
     const sep = nextProfile.os === "windows" ? "\\" : "/";
     const matchedQuick = allModelChoices().find(
       (m) => m.slug === state.model.slug || m.alias === state.model.alias
     );
-    state.model.baseDir = nextProfile.defaultModelsDir;
-    if (matchedQuick && matchedQuick.relativeWin && matchedQuick.relativeLinux) {
+    state.model.baseDir = nextModelsDir;
+    if (matchedQuick && matchedQuick.relativeWin && matchedQuick.relativeLinux && !matchedQuick.fromScan) {
       applyQuickModel(matchedQuick);
-    } else if (prevProfile.os !== nextProfile.os) {
+    } else if (!sameOs) {
       const fileOnly = String(state.model.fullPath || state.model.filename || "").split(/[\\/]/).pop();
-      state.model.fullPath = nextProfile.defaultModelsDir + sep + fileOnly;
+      state.model.fullPath = nextModelsDir + sep + fileOnly;
       state.model.filename = fileOnly;
+    }
+
+    if (!sameOs) {
+      state.discoveredModels = [];
+      state.modelScan = {
+        status: "idle",
+        note: "",
+        scannedRootName: "",
+        scannedAt: "",
+        qwen38Found: false,
+        qwen36Found: false,
+        qwen38Match: null,
+        qwen36Match: null,
+        skippedProjectors: 0
+      };
     }
   }
 
@@ -233,9 +552,18 @@
         </label>`;
     }
 
+    const buckets = getModelBuckets();
+    const setupModelChips = buckets.allModels
+      .map((m) => {
+        const isAct = isModelChoiceActive(m);
+        const prefix = m.scanFound ? "[Found] " : m.scanMissing ? "[Missing] " : m.fromScan ? "[Scan] " : "";
+        return `<button type="button" class="sb-chip ${isAct ? "active" : ""} ${m.scanFound ? "is-found" : ""} ${m.scanMissing ? "is-missing" : ""}" data-select-model="${esc(m.id)}" title="${esc(m.fullPath || m.relativeWin || m.relativeLinux || m.alias)}">${prefix}${esc(m.label || m.alias)}</button>`;
+      })
+      .join("");
+
     const cardsHtml = cards
       .map(
-        (c) => `<div class="sb-terminal-wrap">
+        (c) => `<div id="setup-card-${esc(c.id)}" data-card-id="${esc(c.id)}" class="sb-terminal-wrap">
           <div class="sb-terminal-bar">
             <span data-tip="${esc(c.id)}">${esc(c.title)}</span>
             <button type="button" class="btn btn-sm" data-copy-setup="${esc(c.id)}">Copy</button>
@@ -293,8 +621,15 @@
           <div class="sb-field"><label data-tip="hw_repoDir">Repo Dir</label><input type="text" class="sb-input" data-hw-field="repoDir" value="${esc(state.hardware.repoDir)}" /></div>
           <div class="sb-field"><label data-tip="hw_benchRoot">Bench Root (Venvs &amp; llmperf)</label><input type="text" class="sb-input" data-hw-field="benchRoot" value="${esc(state.hardware.benchRoot)}" /></div>
           <div class="sb-field"><label data-tip="hw_resultsDir">Results Dir (Benchmark Outputs)</label><input type="text" class="sb-input" data-hw-field="resultsDir" value="${esc(state.hardware.resultsDir)}" /></div>
+          <div class="sb-field"><label data-tip="hw_modelsDir">Models Root Folder (\\models\\)</label><input type="text" class="sb-input" data-hw-field="modelsDir" value="${esc(state.hardware.modelsDir || "")}" /></div>
           <div class="sb-field"><label data-tip="model_fullPath">Active Model (.gguf)</label><input type="text" class="sb-input" data-model-field="fullPath" value="${esc(state.model.fullPath)}" /></div>
         </div>
+        <div class="sb-model-actions">
+          <button type="button" class="btn btn-sm btn-primary" data-tip="btn_scanModelsDir" data-action="trigger-scan-models-dir">Scan \\models\\ Folder</button>
+          <button type="button" class="btn btn-sm btn-outline" data-tip="btn_selectModelFile" data-action="trigger-select-model-file">Select .gguf File</button>
+          <div class="sb-pill-row">${setupModelChips}</div>
+        </div>
+        ${renderModelStatusBannerHtml(false)}
         ${platformTogglesHtml ? `<div class="sb-inline-row" style="margin-top:10px;">${platformTogglesHtml}</div>` : ""}
       </div>
       <div class="ssh-stack" id="setup-cards-root">${cardsHtml}</div>
@@ -482,6 +817,7 @@
 
     return `<div class="sb-drawer">
       <div class="sb-form-grid">
+        <div class="sb-field"><label data-tip="hw_modelsDir">Models Root Folder</label><input type="text" class="sb-input" data-hw-field="modelsDir" value="${esc(state.hardware.modelsDir || "")}" /></div>
         <div class="sb-field"><label data-tip="hw_binDir">Llama Bin Dir</label><input type="text" class="sb-input" data-hw-field="binDir" value="${esc(state.hardware.binDir)}" /></div>
         <div class="sb-field"><label data-tip="hw_repoDir">Repo Dir</label><input type="text" class="sb-input" data-hw-field="repoDir" value="${esc(state.hardware.repoDir)}" /></div>
         <div class="sb-field"><label data-tip="hw_benchRoot">Bench Root</label><input type="text" class="sb-input" data-hw-field="benchRoot" value="${esc(state.hardware.benchRoot)}" /></div>
@@ -542,14 +878,27 @@
            </label>`
         : "";
 
-    const quickChips = D.QUICK_MODELS.map((m) => {
-      const isAct = state.model.slug === m.slug || state.model.alias === m.alias;
-      return `<button type="button" class="sb-chip ${isAct ? "active" : ""}" data-select-model="${esc(m.id)}">${esc(m.label)}</button>`;
+    const buckets = getModelBuckets();
+
+    const quickChips = buckets.quickModelChoices.map((m) => {
+      const isAct = isModelChoiceActive(m);
+      const prefix = m.scanFound ? "[Found] " : m.scanMissing ? "[Missing] " : "";
+      return `<button type="button" class="sb-chip ${isAct ? "active" : ""} ${m.scanFound ? "is-found" : ""} ${m.scanMissing ? "is-missing" : ""}" data-select-model="${esc(m.id)}" title="${esc(m.fullPath || m.relativeWin || m.relativeLinux || m.alias)}">${prefix}${esc(m.label)}</button>`;
     }).join("");
+
+    const discoveredChips = buckets.extraDiscoveredModels
+      .map((m) => {
+        const isAct = isModelChoiceActive(m);
+        return `<span class="sb-chip-group">
+          <button type="button" class="sb-chip is-found ${isAct ? "active" : ""}" data-select-model="${esc(m.id)}" title="${esc(m.fullPath || m.alias)}">[Scan] ${esc(m.label || m.alias)}</button>
+          <button type="button" class="sb-chip-x" title="Remove scanned model" data-remove-discovered="${esc(m.id)}">&times;</button>
+        </span>`;
+      })
+      .join("");
 
     const customChips = (state.customModels || [])
       .map((m) => {
-        const isAct = state.model.slug === m.slug || state.model.alias === m.alias;
+        const isAct = isModelChoiceActive(m);
         return `<span class="sb-chip-group">
           <button type="button" class="sb-chip ${isAct ? "active" : ""}" data-select-model="${esc(m.id)}">${esc(m.label || m.alias)}</button>
           <button type="button" class="sb-chip-x" title="Remove model" data-remove-model="${esc(m.id)}">&times;</button>
@@ -631,22 +980,28 @@
           <label class="sb-field-inline" data-tip="hw_vramGb"><span>VRAM (GB)</span>
             <input type="number" class="sb-input" style="width:76px" data-hw-field="vramGb" value="${esc(state.hardware.vramGb)}" />
           </label>
-          <div class="sb-pill-row">${quickChips}${customChips}</div>
+          <div class="sb-pill-row">${quickChips}${discoveredChips}${customChips}</div>
           <button type="button" class="btn btn-sm btn-outline" style="margin-left:auto" data-action="toggle-paths-drawer">
             Paths &amp; Naming ${state.ui.showPathsAndNaming ? "&#9652;" : "&#9662;"}
           </button>
         </div>
 
         <div class="config-model-row">
+          <label class="sb-field-inline" style="flex:0.9; min-width:200px;" data-tip="hw_modelsDir"><span>Models Root</span>
+            <input type="text" class="sb-input sb-input-wide" data-hw-field="modelsDir" value="${esc(state.hardware.modelsDir || "")}" />
+          </label>
           <label class="sb-field-inline" style="flex:1.3; min-width:240px;" data-tip="model_fullPath"><span>Model (.gguf)</span>
             <input type="text" class="sb-input sb-input-wide" data-model-field="fullPath" value="${esc(state.model.fullPath)}" />
           </label>
+          <button type="button" class="btn btn-sm btn-primary" data-tip="btn_scanModelsDir" data-action="trigger-scan-models-dir">Scan \\models\\ Folder</button>
+          <button type="button" class="btn btn-sm btn-outline" data-tip="btn_selectModelFile" data-action="trigger-select-model-file">Select .gguf File</button>
           <button type="button" class="btn btn-sm btn-outline" data-action="add-custom-model">+ Add Model</button>
-          <label class="sb-field-inline" style="flex:1; min-width:220px;" data-tip="hw_resultsDir"><span>Results Dir</span>
+          <label class="sb-field-inline" style="flex:0.9; min-width:200px;" data-tip="hw_resultsDir"><span>Results Dir</span>
             <input type="text" class="sb-input sb-input-wide" data-hw-field="resultsDir" value="${esc(state.hardware.resultsDir)}" />
           </label>
         </div>
 
+        ${renderModelStatusBannerHtml(false)}
         ${renderPathsDrawer()}
       </div>
 
@@ -905,7 +1260,7 @@
       .join("");
 
     const choices = allModelChoices();
-    const matched = choices.find((m) => m.slug === state.model.slug || m.alias === state.model.alias);
+    const matched = choices.find((m) => isModelChoiceActive(m));
     const modelOpts = [
       !matched
         ? `<option value="__current__" selected>${esc(state.model.alias || state.model.slug || "Custom")}</option>`
@@ -1000,6 +1355,8 @@
 
     root.innerHTML = `
       <div class="sb-container">
+        <input type="file" id="scan-models-dir-input" webkitdirectory directory multiple style="display:none" />
+        <input type="file" id="select-model-file-input" accept=".gguf" style="display:none" />
         <header class="sb-header">
           <div class="sb-brand-cluster">
             <span class="sb-brand">ai-benchmate</span>
@@ -1129,14 +1486,57 @@
       }
       return;
     }
+    if (t.dataset.removeDiscovered) {
+      state.discoveredModels = (state.discoveredModels || []).filter((m) => m.id !== t.dataset.removeDiscovered);
+      persistState();
+      renderApp();
+      return;
+    }
     if (t.dataset.removeModel) {
       state.customModels = (state.customModels || []).filter((m) => m.id !== t.dataset.removeModel);
       persistState();
       renderApp();
       return;
     }
+    if (t.dataset.action === "trigger-scan-models-dir") {
+      const inp = document.getElementById("scan-models-dir-input");
+      if (inp) inp.click();
+      return;
+    }
+    if (t.dataset.action === "trigger-select-model-file") {
+      const inp = document.getElementById("select-model-file-input");
+      if (inp) inp.click();
+      return;
+    }
+    if (t.dataset.action === "clear-model-scan") {
+      state.discoveredModels = [];
+      state.modelScan = {
+        status: "idle",
+        note: "",
+        scannedRootName: "",
+        scannedAt: "",
+        qwen38Found: false,
+        qwen36Found: false,
+        qwen38Match: null,
+        qwen36Match: null,
+        skippedProjectors: 0
+      };
+      persistState();
+      renderApp();
+      return;
+    }
+    if (t.dataset.action === "jump-setup-models") {
+      state.ui.activeTab = "setup";
+      persistState();
+      renderApp();
+      setTimeout(() => {
+        const el = document.getElementById("setup-card-setup_models") || document.querySelector('[data-card-id="setup_models"]');
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 60);
+      return;
+    }
     if (t.dataset.action === "add-custom-model") {
-      const parsed = E.parseModelPath(state.model.fullPath);
+      const parsed = E.parseModelPath(state.model.fullPath, state.hardware.modelsDir);
       const alias = state.model.alias || parsed.alias;
       const slug = state.model.slug || parsed.slug;
       const newEntry = {
@@ -1147,9 +1547,9 @@
         tokenizer: state.model.tokenizer || parsed.tokenizer,
         weightGb: Number(state.model.weightGb) || parsed.weightGb,
         paramsB: Number(state.model.paramsB) || parsed.paramsB,
-        fullPath: state.model.fullPath
+        fullPath: parsed.fullPath || state.model.fullPath
       };
-      state.customModels = (state.customModels || []).filter((m) => m.slug !== slug && m.alias !== alias);
+      state.customModels = (state.customModels || []).filter((m) => normalizePathCmp(m.fullPath) !== normalizePathCmp(newEntry.fullPath));
       state.customModels.push(newEntry);
       persistState();
       renderApp();
@@ -1402,6 +1802,16 @@
       }
       return;
     }
+    if (t.id === "scan-models-dir-input") {
+      handleModelsDirScan(t.files);
+      t.value = "";
+      return;
+    }
+    if (t.id === "select-model-file-input") {
+      handleSingleModelPick(t.files);
+      t.value = "";
+      return;
+    }
     if (t.id === "audit-dir-input" || t.id === "audit-files-input") {
       handleAuditFiles(t.files);
       return;
@@ -1415,7 +1825,13 @@
     const t = ev.target;
     if (t.dataset.hwField) {
       const f = t.dataset.hwField;
-      state.hardware[f] = t.type === "number" ? Number(t.value) || 0 : t.value;
+      if (f === "modelsDir") {
+        applyModelsDirChange(t.value, false);
+        const fpEl = document.querySelector('[data-model-field="fullPath"]');
+        if (fpEl && document.activeElement !== fpEl) fpEl.value = state.model.fullPath;
+      } else {
+        state.hardware[f] = t.type === "number" ? Number(t.value) || 0 : t.value;
+      }
       persistState();
       refreshLiveDom();
       return;
@@ -1423,15 +1839,9 @@
     if (t.dataset.modelField && t.tagName !== "SELECT") {
       const f = t.dataset.modelField;
       if (f === "fullPath") {
-        state.model.fullPath = t.value;
-        const parsed = E.parseModelPath(t.value);
-        state.model.baseDir = parsed.baseDir;
-        state.model.filename = parsed.filename;
-        state.model.alias = parsed.alias;
-        state.model.slug = parsed.slug;
-        state.model.tokenizer = parsed.tokenizer;
-        state.model.weightGb = parsed.weightGb;
-        state.model.paramsB = parsed.paramsB;
+        const res = applyModelPathChange(t.value, false);
+        const mdEl = document.querySelector('[data-hw-field="modelsDir"]');
+        if (res.rootUpdated && mdEl && document.activeElement !== mdEl) mdEl.value = state.hardware.modelsDir;
         ["alias", "slug", "tokenizer", "weightGb", "paramsB"].forEach((k) => {
           const el = document.querySelector(`[data-model-field="${k}"]`);
           if (el && document.activeElement !== el) el.value = state.model[k];
@@ -1460,6 +1870,42 @@
     if (t.dataset.sshField) {
       const f = t.dataset.sshField;
       state.ssh[f] = t.type === "number" ? Number(t.value) || 0 : t.value;
+      persistState();
+      refreshLiveDom();
+    }
+  });
+
+  document.addEventListener("paste", (ev) => {
+    const t = ev.target;
+    if (t.dataset.modelField === "fullPath") {
+      const pasted = ev.clipboardData && ev.clipboardData.getData("text");
+      if (pasted) {
+        ev.preventDefault();
+        applyModelPathChange(pasted, true);
+        persistState();
+        renderApp();
+      }
+    } else if (t.dataset.hwField === "modelsDir") {
+      const pasted = ev.clipboardData && ev.clipboardData.getData("text");
+      if (pasted) {
+        ev.preventDefault();
+        applyModelsDirChange(pasted, true);
+        persistState();
+        renderApp();
+      }
+    }
+  });
+
+  document.addEventListener("focusout", (ev) => {
+    const t = ev.target;
+    if (t.dataset.modelField === "fullPath") {
+      const res = applyModelPathChange(t.value, true);
+      if (res.folderInferred || res.rootUpdated) {
+        persistState();
+        renderApp();
+      }
+    } else if (t.dataset.hwField === "modelsDir") {
+      applyModelsDirChange(t.value, true);
       persistState();
       refreshLiveDom();
     }

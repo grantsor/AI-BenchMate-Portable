@@ -40,7 +40,7 @@
       defaultRepoDir: "$HOME\\llama.cpp",
       defaultBenchRoot: "$HOME\\benchmarks",
       defaultResultsDir: "$HOME\\benchmarks\\rtx_spark",
-      defaultModelsDir: "$HOME\\.lmstudio\\models",
+      defaultModelsDir: "$env:USERPROFILE\\.lmstudio\\models",
       llamaBenchBin: ".\\llama-bench.exe",
       llamaServerBin: ".\\llama-server.exe",
       backendLabel: "CUDA (Windows ARM64)",
@@ -61,7 +61,7 @@
       defaultRepoDir: "$HOME\\llama.cpp",
       defaultBenchRoot: "$HOME\\benchmarks",
       defaultResultsDir: "$HOME\\benchmarks\\nvidia_x64",
-      defaultModelsDir: "$HOME\\.lmstudio\\models",
+      defaultModelsDir: "$env:USERPROFILE\\.lmstudio\\models",
       llamaBenchBin: ".\\llama-bench.exe",
       llamaServerBin: ".\\llama-server.exe",
       backendLabel: "CUDA (Windows x64)",
@@ -82,7 +82,7 @@
       defaultRepoDir: "$HOME\\llama.cpp",
       defaultBenchRoot: "$HOME\\benchmarks",
       defaultResultsDir: "$HOME\\benchmarks\\radeon_r9700",
-      defaultModelsDir: "$HOME\\.lmstudio\\models",
+      defaultModelsDir: "$env:USERPROFILE\\.lmstudio\\models",
       llamaBenchBin: ".\\llama-bench.exe",
       llamaServerBin: ".\\llama-server.exe",
       backendLabel: "Vulkan / ROCm HIP",
@@ -514,9 +514,9 @@
       rec: "Recommended: Run SECOND on initial setup so all Python benchmark clients and virtual environments are ready."
     },
     setup_models: {
-      title: "03 · Download & Verify Benchmark GGUF Models",
-      desc: "Checks if Qwen3.8-27B-UD-Q4_K_M.gguf (~15.8 GB) and Qwen3.6-35B-A3B-UD-Q4_K_M.gguf (~21.0 GB) exist on disk and automatically downloads any missing model via huggingface_hub (hf_hub_download) or resumable curl/wget fallback.",
-      rec: "Recommended: Run THIRD to ensure both parity GGUF models are downloaded and verified in your Models directory."
+      title: "03 · Scan LM Studio Folder & Download Missing Benchmark GGUF Models",
+      desc: "Recursively scans your LM Studio Models Root Folder (and ~/.lmstudio/settings.json downloadsFolder) for Qwen3.8-27B and Qwen3.6-35B-A3B first. Any model already present on disk is kept; any missing .gguf is downloaded via huggingface_hub (or curl/wget fallback).",
+      rec: "Recommended: Run THIRD (or click 'Scan Models Folder' above first if you already downloaded models in LM Studio)."
     },
     setup_verify: {
       title: "04 · Complete Pre-Flight Verification & Self-Healing Check",
@@ -615,10 +615,25 @@
       desc: "Centralized directory where all benchmark .md tables, .json metrics, and AIPerf/llmperf/AgentPerf output folders are saved. Select this folder in '3. Results & Audit' to verify runs.",
       rec: "Default: $HOME/benchmarks/dgx_spark, $HOME\\benchmarks\\rtx_spark, $HOME\\benchmarks\\nvidia_x64, or $HOME\\benchmarks\\radeon_r9700."
     },
+    hw_modelsDir: {
+      title: "Models Root Folder (LM Studio \\models\\)",
+      desc: "Root models folder scanned recursively for .gguf files (and target folder for Card 03 downloads). Automatically resolves to the active Windows user profile via $env:USERPROFILE\\.lmstudio\\models.",
+      rec: "Default / Recommended: $env:USERPROFILE\\.lmstudio\\models (Windows) or $HOME/models (Linux)."
+    },
+    btn_scanModelsDir: {
+      title: "Route 1 · Scan \\models\\ Folder (Recommended)",
+      desc: "Recursively scans any selected \\models\\ folder in your browser (without copying 20+ GB files), notifies whether Qwen 3.8 & Qwen 3.6 were found, reads exact GB weights, and integrates all discovered .gguf models into Benchmarks.",
+      rec: "Recommended: Point to C:\\Users\\<YourName>\\.lmstudio\\models (or any custom models folder)."
+    },
+    btn_selectModelFile: {
+      title: "Route 2 · Select Exact .gguf File",
+      desc: "Pick a specific .gguf file directly from disk or paste its full Explorer path into Active Model (.gguf) to benchmark that single file immediately.",
+      rec: "Use when benchmarking one specific .gguf file outside the root scan."
+    },
     model_fullPath: {
       title: "Active Model (.gguf File Path)",
-      desc: "Full path to the .gguf model file passed to '-m'. Pasting any .gguf path automatically extracts the Model Alias, Output Slug, Hugging Face Tokenizer ID, and estimated weight size.",
-      rec: "Default: Qwen3.8-27B-UD-Q4_K_M.gguf (Dense) or Qwen3.6-35B-A3B-UD-Q4_K_M.gguf (MoE)."
+      desc: "Full path to the .gguf model file passed to '-m'. Supports pasting Windows 'Copy as path' quotes (auto-stripped) or pasting a root \\models\\ folder path (auto-routes to Models Root Folder).",
+      rec: "Default: $env:USERPROFILE\\.lmstudio\\models\\unsloth\\Qwen3.8-27B-GGUF\\Qwen3.8-27B-UD-Q4_K_M.gguf (Windows)."
     },
     model_alias: {
       title: "Served Model Alias (--alias)",
@@ -957,6 +972,7 @@
         repoDir: p.defaultRepoDir,
         benchRoot: p.defaultBenchRoot,
         resultsDir: p.defaultResultsDir,
+        modelsDir: p.defaultModelsDir,
         host: "0.0.0.0",
         port: 8080
       },
@@ -971,6 +987,16 @@
         paramsB: m.paramsB,
         clientModelMode: "alias" // alias | fullpath (Optimization #3)
       },
+      modelScan: {
+        scannedRootName: "",
+        scannedAt: "",
+        foundModels: [],
+        skippedProjectors: 0,
+        qwen38Found: false,
+        qwen36Found: false,
+        status: "unscanned",
+        note: ""
+      },
       naming: {
         mode: "auto", // auto | stamped | classic
         activePresetName: "Default Settings"
@@ -979,6 +1005,7 @@
       completedSteps: {},
       customPresets: [],
       customModels: [],
+      discoveredModels: [],
       ssh: {
         user: "$USER",
         host: "192.168.50.55",

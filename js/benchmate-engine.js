@@ -25,8 +25,32 @@
     return out;
   }
 
+  function cleanUserPath(rawPath) {
+    return String(rawPath || "")
+      .trim()
+      .replace(/^["']+/, "")
+      .replace(/["']+$/, "")
+      .trim();
+  }
+
+  function stripTrailingSep(p) {
+    return cleanUserPath(p).replace(/[\\/]+$/, "");
+  }
+
+  function isNonLlmGgufHelper(filename) {
+    const name = String(filename || "").trim();
+    return /^(mmproj|mtp|projector|draft)[-_.\s]/i.test(name);
+  }
+
+  function getSplitGgufInfo(filename) {
+    const m = String(filename || "").match(/^(.*)-(\d{5})-of-(\d{5})(\.gguf)$/i);
+    if (!m) return null;
+    return { groupKey: m[1].toLowerCase(), part: parseInt(m[2], 10), total: parseInt(m[3], 10) };
+  }
+
   function loadState() {
-    const fallback = global.BenchmateData.createDefaultState();
+    const { createDefaultState, HARDWARE_PROFILES } = global.BenchmateData;
+    const fallback = createDefaultState();
     try {
       const raw = global.localStorage.getItem(STORAGE_KEY);
       if (!raw) return fallback;
@@ -44,6 +68,44 @@
       if (legacyTabMap[merged.ui.activeTab]) {
         merged.ui.activeTab = legacyTabMap[merged.ui.activeTab];
       }
+
+      const pid = merged.hardware && merged.hardware.profileId;
+      const profile = HARDWARE_PROFILES[pid] || HARDWARE_PROFILES.dgx_spark_linux_arm64;
+      if (profile.os === "windows") {
+        const legacyModelsPrefix = "$HOME\\.lmstudio\\models";
+        const canonicalWinRoot = "$env:USERPROFILE\\.lmstudio\\models";
+        const curRoot = stripTrailingSep((merged.hardware && merged.hardware.modelsDir) || (merged.model && merged.model.baseDir) || "");
+        if (
+          !curRoot ||
+          curRoot === legacyModelsPrefix ||
+          curRoot === "$HOME/models" ||
+          /[\\/]unsloth$/i.test(curRoot) ||
+          /[\\/]unsloth[\\/]/i.test(curRoot)
+        ) {
+          merged.hardware.modelsDir = canonicalWinRoot;
+        } else if (/^(\$HOME|\.lmstudio|.*\\\.lmstudio\\models\\)/i.test(curRoot)) {
+          const mAnc = curRoot.match(/^(.+?[\\/]models)(?:[\\/]|$)/i);
+          merged.hardware.modelsDir = mAnc ? mAnc[1].replace(/^\$HOME/i, "$env:USERPROFILE") : canonicalWinRoot;
+        }
+
+        if (merged.model && merged.model.fullPath) {
+          let fp = cleanUserPath(merged.model.fullPath);
+          if (fp.startsWith(legacyModelsPrefix)) {
+            fp = canonicalWinRoot + fp.slice(legacyModelsPrefix.length);
+          }
+          fp = fp.replace(
+            /\\unsloth\\[^\\]+\\unsloth\\(Qwen3\.[68]-[^\\]+\\[^\\]+)$/i,
+            "\\unsloth\\$1"
+          );
+          merged.model.fullPath = fp;
+        }
+        if (!merged.model.baseDir || merged.model.baseDir === legacyModelsPrefix || /[\\/]unsloth[\\/]/i.test(merged.model.baseDir)) {
+          merged.model.baseDir = merged.hardware.modelsDir;
+        }
+      } else if (!merged.hardware.modelsDir) {
+        merged.hardware.modelsDir = profile.defaultModelsDir;
+      }
+
       return merged;
     } catch (_) {
       return fallback;
@@ -119,19 +181,21 @@
     return cleanBase + sep + cleanLeaf;
   }
 
-  function parseModelPath(rawPath) {
-    const trimmed = String(rawPath || "").trim();
-    const isWin = trimmed.indexOf("\\") !== -1 || /^[A-Za-z]:/.test(trimmed);
+  function parseModelPath(rawPath, overrideModelsRoot) {
+    const trimmed = cleanUserPath(rawPath);
+    const isWin = trimmed.indexOf("\\") !== -1 || /^[A-Za-z]:/.test(trimmed) || /^\$env:/i.test(trimmed);
     const sep = isWin ? "\\" : "/";
     const parts = trimmed.split(/[\\/]+/).filter(Boolean);
     const filename = parts.length ? parts[parts.length - 1] : "model.gguf";
     let baseDir = "";
-    if (parts.length > 1) {
+    if (overrideModelsRoot) {
+      baseDir = stripTrailingSep(overrideModelsRoot);
+    } else if (parts.length > 1) {
       baseDir = (trimmed.startsWith("/") ? "/" : "") + parts.slice(0, -1).join(sep);
     }
 
-    // Strip extension and common quant suffixes to obtain clean alias
-    const withoutExt = filename.replace(/\.gguf$/i, "");
+    // Strip extension, split shard suffixes, and common quant suffixes to obtain clean alias
+    const withoutExt = filename.replace(/\.gguf$/i, "").replace(/-\d{5}-of-\d{5}$/i, "");
     const alias = withoutExt
       .replace(/-(UD-)?(IQ\d+_[A-Z0-9_]+|Q\d+_[A-Z0-9_]+|F16|BF16|F32|FP8|NVFP4|QAT)$/i, "")
       .replace(/-(Q\d+_K_[MS]|Q\d+_\d+|Q8_0|Q4_0)$/i, "") || withoutExt;
@@ -141,6 +205,9 @@
     const qwenVer = alias.match(/qwen\s*([0-9]+)\.([0-9]+)/i);
     if (qwenVer) {
       slug = "qwen" + qwenVer[1] + qwenVer[2];
+      if (/uncensored/i.test(alias)) slug += "_uncensored";
+      else if (/hermes/i.test(alias)) slug += "_hermes";
+      else if (/abliterated/i.test(alias)) slug += "_ablit";
     } else {
       slug = alias
         .toLowerCase()
@@ -177,6 +244,8 @@
     return {
       osStyle: isWin ? "windows" : "linux",
       sep,
+      cleanPath: trimmed,
+      fullPath: trimmed,
       baseDir,
       filename,
       alias,
@@ -184,6 +253,264 @@
       tokenizer,
       paramsB,
       weightGb
+    };
+  }
+
+  function inferModelsRootFromInput(rawInput, currentModelsDir, osStyle) {
+    const clean = cleanUserPath(rawInput);
+    const isWin = osStyle === "windows" || clean.indexOf("\\") !== -1 || /^[A-Za-z]:/.test(clean) || /^\$env:/i.test(clean);
+    const sep = isWin ? "\\" : "/";
+    const isGguf = /\.gguf$/i.test(clean);
+    if (!isGguf) {
+      return { cleanPath: stripTrailingSep(clean), isDirectoryOnly: true, modelsDir: stripTrailingSep(clean), sep };
+    }
+    const modelsAncestor = clean.match(/^(.+?[\\/]models)(?=[\\/])/i);
+    let nextModelsDir = stripTrailingSep(currentModelsDir);
+    if (modelsAncestor) {
+      nextModelsDir = modelsAncestor[1];
+    } else if (!nextModelsDir) {
+      nextModelsDir = parseModelPath(clean).baseDir;
+    }
+    return { cleanPath: clean, isDirectoryOnly: false, modelsDir: nextModelsDir, sep };
+  }
+
+  function reRootModelPath(oldRoot, newRoot, fullPath, sep) {
+    const cleanFull = cleanUserPath(fullPath);
+    const cleanOld = stripTrailingSep(oldRoot);
+    const cleanNew = stripTrailingSep(newRoot);
+    if (!cleanNew || !cleanOld) return cleanFull;
+    const oldNorm = cleanOld.replace(/[\\/]+/g, sep).toLowerCase();
+    const fullNorm = cleanFull.replace(/[\\/]+/g, sep);
+    if (fullNorm.toLowerCase().startsWith(oldNorm + sep)) {
+      const tail = fullNorm.slice(oldNorm.length + 1);
+      return joinPath(cleanNew, tail, sep);
+    }
+    return cleanFull;
+  }
+
+  function classifyParityModelMatch(relOrName) {
+    const s = String(relOrName || "");
+    if (/uncensored|hermes|abliterated|aggressive/i.test(s)) return null;
+    if (/qwen\s*3\.?8.*27b/i.test(s) && !/flash|next/i.test(s)) return "qwen38_27b";
+    if (/qwen\s*3\.?6.*35b/i.test(s)) return "qwen36_35b_moe";
+    return null;
+  }
+
+  function rankGgufCandidate(entry, canonicalRel) {
+    const relLow = entry.relativePath.toLowerCase();
+    const canLow = String(canonicalRel || "").toLowerCase();
+    let score = 0;
+    if (relLow === canLow) score += 100;
+    if (/unsloth/i.test(relLow)) score += 30;
+    if (/ud-q4_k_m/i.test(relLow)) score += 20;
+    else if (/q4_k_m/i.test(relLow)) score += 10;
+    return score;
+  }
+
+  function scanModelFolderEntries(entries, state) {
+    const { HARDWARE_PROFILES, QUICK_MODELS } = global.BenchmateData;
+    const profile = HARDWARE_PROFILES[state.hardware.profileId] || HARDWARE_PROFILES.dgx_spark_linux_arm64;
+    const isWin = profile.os === "windows";
+    const sep = isWin ? "\\" : "/";
+    const modelsRoot = stripTrailingSep(state.hardware.modelsDir || (state.model && state.model.baseDir) || profile.defaultModelsDir);
+    const modelsRootLeaf = (modelsRoot.split(/[\\/]+/).filter(Boolean).pop() || "").toLowerCase();
+
+    let pickedRootName = "";
+    let skippedProjectors = 0;
+    const rawGgufs = [];
+
+    for (let i = 0; i < (entries || []).length; i++) {
+      const raw = entries[i];
+      const fileName = String(raw.name || "").trim();
+      const rawRel = String(raw.path || raw.webkitRelativePath || fileName).replace(/\\/g, "/");
+      const segs = rawRel.split("/").filter(Boolean);
+      if (segs.length > 1 && !pickedRootName) {
+        pickedRootName = segs[0];
+      }
+      if (!/\.gguf$/i.test(fileName || rawRel)) continue;
+
+      const leafName = segs.length ? segs[segs.length - 1] : fileName;
+      if (isNonLlmGgufHelper(leafName)) {
+        skippedProjectors += 1;
+        continue;
+      }
+
+      let subSegs = segs.length > 1 ? segs.slice(1) : segs;
+      const firstPickedLow = pickedRootName.toLowerCase();
+      if (firstPickedLow === ".lmstudio" && subSegs[0] && subSegs[0].toLowerCase() === "models" && subSegs.length > 1) {
+        subSegs = subSegs.slice(1);
+      } else if (pickedRootName && modelsRootLeaf && firstPickedLow !== modelsRootLeaf) {
+        if (firstPickedLow === "unsloth" || firstPickedLow === "lmstudio-community" || /-gguf$/i.test(firstPickedLow)) {
+          subSegs = segs;
+        }
+      }
+
+      rawGgufs.push({
+        leafName,
+        relOs: subSegs.join(sep),
+        relSegs: subSegs,
+        size: Number(raw.size) || 0
+      });
+    }
+
+    const splitTotals = new Map();
+    rawGgufs.forEach((item) => {
+      const sp = getSplitGgufInfo(item.leafName);
+      if (sp) {
+        const dirKey = item.relSegs.slice(0, -1).join("/") + "/" + sp.groupKey;
+        splitTotals.set(dirKey, (splitTotals.get(dirKey) || 0) + item.size);
+      }
+    });
+
+    const foundModels = [];
+    for (let i = 0; i < rawGgufs.length; i++) {
+      const item = rawGgufs[i];
+      const sp = getSplitGgufInfo(item.leafName);
+      let effectiveBytes = item.size;
+      if (sp) {
+        if (sp.part !== 1) continue;
+        const dirKey = item.relSegs.slice(0, -1).join("/") + "/" + sp.groupKey;
+        effectiveBytes = splitTotals.get(dirKey) || item.size;
+      }
+
+      const fullPath = joinPath(modelsRoot, item.relOs, sep);
+      const parsed = parseModelPath(fullPath);
+      const weightGb = effectiveBytes > 100 * 1024 * 1024
+        ? Math.max(0.5, Math.round((effectiveBytes / (1024 ** 3)) * 10) / 10)
+        : parsed.weightGb;
+      const publisher = item.relSegs.length >= 2 ? item.relSegs[0] : "";
+      const quantMatch = item.leafName.match(/-(UD-)?(IQ\d+_[A-Z0-9_]+|Q\d+_[A-Z0-9_]+|F16|BF16|NVFP4)/i);
+      const quant = quantMatch ? (quantMatch[1] || "") + quantMatch[2] : "";
+      const matchedQuickId = classifyParityModelMatch(item.relOs);
+
+      const shortPub = publisher && !/^unsloth$/i.test(publisher) ? " · " + publisher.replace(/-community$/i, "") : "";
+      const chipLabel = quant ? `${parsed.alias} (${quant}${shortPub})` : parsed.alias;
+
+      foundModels.push({
+        id: "scan_" + item.relOs.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, ""),
+        label: chipLabel,
+        alias: parsed.alias,
+        slug: parsed.slug,
+        tokenizer: parsed.tokenizer,
+        weightGb,
+        paramsB: parsed.paramsB,
+        publisher,
+        quant,
+        relativePath: item.relOs,
+        relativeWin: item.relSegs.join("\\"),
+        relativeLinux: item.relSegs.join("/"),
+        fullPath,
+        filename: item.leafName,
+        sizeBytes: effectiveBytes,
+        matchedQuickId,
+        fromScan: true
+      });
+    }
+
+    let qwen38Match = null;
+    let qwen36Match = null;
+    foundModels.forEach((m) => {
+      if (m.matchedQuickId === "qwen38_27b") {
+        const score = rankGgufCandidate(m, QUICK_MODELS[0].relativeWin);
+        if (!qwen38Match || score > qwen38Match._score) qwen38Match = { ...m, _score: score };
+      } else if (m.matchedQuickId === "qwen36_35b_moe") {
+        const score = rankGgufCandidate(m, QUICK_MODELS[1].relativeWin);
+        if (!qwen36Match || score > qwen36Match._score) qwen36Match = { ...m, _score: score };
+      }
+    });
+    if (qwen38Match) delete qwen38Match._score;
+    if (qwen36Match) delete qwen36Match._score;
+
+    const qwen38Found = Boolean(qwen38Match);
+    const qwen36Found = Boolean(qwen36Match);
+    const folderDisplay = pickedRootName || modelsRootLeaf || "models";
+
+    let rootMismatchNote = "";
+    if (
+      pickedRootName &&
+      modelsRootLeaf &&
+      pickedRootName.toLowerCase() !== modelsRootLeaf &&
+      pickedRootName.toLowerCase() !== ".lmstudio" &&
+      !["unsloth", "lmstudio-community"].includes(pickedRootName.toLowerCase()) &&
+      !/-gguf$/i.test(pickedRootName)
+    ) {
+      rootMismatchNote = ` Picked folder "${pickedRootName}" differs from Models Root Folder ("${modelsRoot}") — update Models Root Folder if the drive/path on disk is different.`;
+    }
+
+    let status = "empty";
+    let note = "";
+    if (!foundModels.length) {
+      status = "empty";
+      note = `Scanned "${folderDisplay}": No runnable .gguf models found${skippedProjectors ? ` (${skippedProjectors} mmproj/mtp helper files skipped)` : ""}. Run Setup Card 03 (or download in LM Studio) to get Qwen3.8-27B & Qwen3.6-35B-A3B.`;
+    } else if (qwen38Found && qwen36Found) {
+      status = "ok";
+      note = `Scanned "${folderDisplay}": Found ${foundModels.length} GGUF model(s) — Qwen3.8-27B (${qwen38Match.weightGb} GB) & Qwen3.6-35B-A3B (${qwen36Match.weightGb} GB) ready.${skippedProjectors ? ` (${skippedProjectors} mmproj/mtp skipped.)` : ""}${rootMismatchNote}`;
+    } else {
+      status = "partial";
+      const missingNames = [!qwen38Found && "Qwen3.8-27B", !qwen36Found && "Qwen3.6-35B-A3B"].filter(Boolean).join(" & ");
+      note = `Scanned "${folderDisplay}": Found ${foundModels.length} GGUF model(s). Missing default benchmark model: ${missingNames} — Run Card 03 to download missing model(s) or pick any discovered model below.${rootMismatchNote}`;
+    }
+
+    return {
+      scannedRootName: folderDisplay,
+      scannedAt: new Date().toLocaleTimeString(),
+      foundModels,
+      skippedProjectors,
+      qwen38Found,
+      qwen36Found,
+      qwen38Match,
+      qwen36Match,
+      status,
+      note
+    };
+  }
+
+  function resolvePickedModelFile(fileObj, state) {
+    const { HARDWARE_PROFILES, QUICK_MODELS } = global.BenchmateData;
+    const profile = HARDWARE_PROFILES[state.hardware.profileId] || HARDWARE_PROFILES.dgx_spark_linux_arm64;
+    const isWin = profile.os === "windows";
+    const sep = isWin ? "\\" : "/";
+    const modelsRoot = stripTrailingSep(state.hardware.modelsDir || profile.defaultModelsDir);
+    const fileName = String((fileObj && fileObj.name) || "").trim();
+    const sizeBytes = Number(fileObj && fileObj.size) || 0;
+    const scanned = (state.discoveredModels || []).find(
+      (m) => String(m.filename || "").toLowerCase() === fileName.toLowerCase()
+    );
+
+    let fullPath = "";
+    let matchedScanned = false;
+    if (scanned && scanned.fullPath) {
+      fullPath = scanned.fullPath;
+      matchedScanned = true;
+    } else {
+      const qMatch = classifyParityModelMatch(fileName);
+      if (qMatch === "qwen38_27b" && fileName.toLowerCase() === "qwen3.8-27b-ud-q4_k_m.gguf") {
+        fullPath = joinPath(modelsRoot, isWin ? QUICK_MODELS[0].relativeWin : QUICK_MODELS[0].relativeLinux, sep);
+      } else if (qMatch === "qwen36_35b_moe" && fileName.toLowerCase() === "qwen3.6-35b-a3b-ud-q4_k_m.gguf") {
+        fullPath = joinPath(modelsRoot, isWin ? QUICK_MODELS[1].relativeWin : QUICK_MODELS[1].relativeLinux, sep);
+      } else {
+        fullPath = joinPath(modelsRoot, fileName, sep);
+      }
+    }
+
+    const parsed = parseModelPath(fullPath);
+    const weightGb = sizeBytes > 100 * 1024 * 1024
+      ? Math.max(0.5, Math.round((sizeBytes / (1024 ** 3)) * 10) / 10)
+      : (scanned && scanned.weightGb) || parsed.weightGb;
+
+    return {
+      fullPath,
+      baseDir: modelsRoot,
+      filename: fileName,
+      alias: parsed.alias,
+      slug: parsed.slug,
+      tokenizer: parsed.tokenizer,
+      paramsB: parsed.paramsB,
+      weightGb,
+      matchedScanned,
+      note: matchedScanned
+        ? `Selected exact scanned file: ${fullPath} (${weightGb} GB).`
+        : `Selected "${fileName}" (${weightGb} GB). If this file is inside an author/repo subfolder, use "Scan \\models\\ Folder" or paste its Explorer path ("Copy as path") into Active Model (.gguf).`
     };
   }
 
@@ -1342,7 +1669,7 @@
     const binDir = state.hardware.binDir || profile.defaultBinDir;
     const repoDir = state.hardware.repoDir || profile.defaultRepoDir;
     const modelPath = state.model.fullPath;
-    const modelDir = state.model.baseDir || profile.defaultModelsDir;
+    const modelDir = state.hardware.modelsDir || profile.defaultModelsDir;
     const port = state.hardware.port || 8080;
 
     const cards = [];
@@ -1580,44 +1907,69 @@
       });
     }
 
-    // CARD 03: Download & Verify Benchmark GGUF Models
+    // CARD 03: Smart LM Studio Folder Scanner & Conditional GGUF Downloader
     if (isWin) {
       cards.push({
         id: "setup_models",
-        title: `03 · Download & Verify Benchmark GGUF Models (Qwen3.8-27B & Qwen3.6-35B-A3B)`,
+        title: `03 · Scan LM Studio Folder & Download Missing Benchmark GGUF Models (Qwen3.8-27B & Qwen3.6-35B-A3B)`,
         badge: "STEP 03 · MODELS",
         cmd: [
-          `# Conflict-free GGUF Model Downloader (auto-downloads missing models via huggingface_hub or resumable curl.exe)`,
-          `$q38Dir = "${modelDir}\\unsloth\\Qwen3.8-27B-GGUF"`,
-          `$q36Dir = "${modelDir}\\unsloth\\Qwen3.6-35B-A3B-GGUF"`,
-          `New-Item -ItemType Directory -Force -Path $q38Dir, $q36Dir | Out-Null`,
-          `if (Test-Path "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe") {`,
-          `  & "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe" -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('huggingface_hub') else 1)" 2>$null`,
-          `  if ($LASTEXITCODE -ne 0) { & "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe" -m pip install "huggingface_hub<2.0" }`,
-          `  & "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe" -c "from huggingface_hub import hf_hub_download; hf_hub_download('unsloth/Qwen3.8-27B-GGUF', 'Qwen3.8-27B-UD-Q4_K_M.gguf', local_dir=r'$q38Dir'); hf_hub_download('unsloth/Qwen3.6-35B-A3B-GGUF', 'Qwen3.6-35B-A3B-UD-Q4_K_M.gguf', local_dir=r'$q36Dir')"`,
-          `} else {`,
-          `  curl.exe -L -C - "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q4_K_M.gguf" -o "$q38Dir\\Qwen3.8-27B-UD-Q4_K_M.gguf"`,
-          `  curl.exe -L -C - "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf" -o "$q36Dir\\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"`,
+          `# Smart LM Studio GGUF Scanner & Downloader (checks your \\models\\ subfolders first; downloads only missing parity GGUFs)`,
+          `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12`,
+          `$ProgressPreference = 'SilentlyContinue'`,
+          `$modelRoot = "${modelDir}"`,
+          `if (Test-Path "$env:USERPROFILE\\.lmstudio\\settings.json") {`,
+          `  try {`,
+          `    $lmsCfg = Get-Content "$env:USERPROFILE\\.lmstudio\\settings.json" -Raw | ConvertFrom-Json`,
+          `    if ($lmsCfg.downloadsFolder -and (Test-Path $lmsCfg.downloadsFolder) -and ($modelRoot -like "*\\.lmstudio\\models")) {`,
+          `      $modelRoot = $lmsCfg.downloadsFolder`,
+          `    }`,
+          `  } catch {}`,
           `}`,
-          `Get-ChildItem -Path "${modelDir}" -Filter "*.gguf" -Recurse | Select-Object FullName, @{Name="SizeGB";Expression={[math]::Round($_.Length/1GB,2)}}`
+          `New-Item -ItemType Directory -Force -Path $modelRoot | Out-Null`,
+          `$existingGgufs = Get-ChildItem -Path $modelRoot -Filter "*.gguf" -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 500MB -and $_.Name -notmatch '^(mmproj|mtp|projector|draft)[-_.]' }`,
+          `$q38Found = $existingGgufs | Where-Object { $_.Name -match 'Qwen3\\.?8.*27B' -and $_.Name -notmatch 'Uncensored|Hermes|Flash' } | Select-Object -First 1`,
+          `$q36Found = $existingGgufs | Where-Object { $_.Name -match 'Qwen3\\.?6.*35B' -and $_.Name -notmatch 'Uncensored|Hermes' } | Select-Object -First 1`,
+          `function Get-BenchModel([string]$repo, [string]$file, [string]$subDir) {`,
+          `  $destDir = Join-Path $modelRoot $subDir`,
+          `  New-Item -ItemType Directory -Force -Path $destDir | Out-Null`,
+          `  if (Test-Path "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe") {`,
+          `    & "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe" -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('huggingface_hub') else 1)" 2>$null`,
+          `    if ($LASTEXITCODE -ne 0) { & "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe" -m pip install "huggingface_hub<2.0" }`,
+          `    & "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe" -c "from huggingface_hub import hf_hub_download; hf_hub_download('$repo', '$file', local_dir=r'$destDir')"`,
+          `  } else {`,
+          `    curl.exe -L -C - "https://huggingface.co/$repo/resolve/main/$file" -o "$destDir\\$file"`,
+          `  }`,
+          `}`,
+          `if ($q38Found) { Write-Host "[FOUND] Qwen3.8-27B: $($q38Found.FullName) ($([math]::Round($q38Found.Length/1GB,2)) GB)" } else { Write-Host "[+] Downloading Qwen3.8-27B..."; Get-BenchModel "unsloth/Qwen3.8-27B-GGUF" "Qwen3.8-27B-UD-Q4_K_M.gguf" "unsloth\\Qwen3.8-27B-GGUF" }`,
+          `if ($q36Found) { Write-Host "[FOUND] Qwen3.6-35B-A3B: $($q36Found.FullName) ($([math]::Round($q36Found.Length/1GB,2)) GB)" } else { Write-Host "[+] Downloading Qwen3.6-35B-A3B..."; Get-BenchModel "unsloth/Qwen3.6-35B-A3B-GGUF" "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf" "unsloth\\Qwen3.6-35B-A3B-GGUF" }`,
+          `Write-Host "=== Runnable GGUF Models in $modelRoot ==="`,
+          `Get-ChildItem -Path $modelRoot -Filter "*.gguf" -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 500MB -and $_.Name -notmatch '^(mmproj|mtp|projector|draft)[-_.]' } | Select-Object FullName, @{Name="SizeGB";Expression={[math]::Round($_.Length/1GB,2)}}`
         ].join("\n")
       });
     } else {
       cards.push({
         id: "setup_models",
-        title: `03 · Download & Verify Benchmark GGUF Models (Qwen3.8-27B & Qwen3.6-35B-A3B)`,
+        title: `03 · Scan Folder & Download Missing Benchmark GGUF Models (Qwen3.8-27B & Qwen3.6-35B-A3B)`,
         badge: "STEP 03 · MODELS",
         cmd: [
-          `# Conflict-free GGUF Model Downloader (auto-downloads missing models via huggingface_hub or resumable wget)`,
+          `# Smart GGUF Scanner & Downloader (skips existing models found recursively in ${modelDir})`,
           `mkdir -p "${modelDir}"`,
-          `if [ -x "${benchRoot}/.venv-aiperf/bin/python3" ]; then`,
-          `  "${benchRoot}/.venv-aiperf/bin/python3" -c "import huggingface_hub" 2>/dev/null || "${benchRoot}/.venv-aiperf/bin/pip" install "huggingface_hub<2.0"`,
-          `  "${benchRoot}/.venv-aiperf/bin/python3" -c "from huggingface_hub import hf_hub_download; hf_hub_download('unsloth/Qwen3.8-27B-GGUF', 'Qwen3.8-27B-UD-Q4_K_M.gguf', local_dir='${modelDir}'); hf_hub_download('unsloth/Qwen3.6-35B-A3B-GGUF', 'Qwen3.6-35B-A3B-UD-Q4_K_M.gguf', local_dir='${modelDir}')"`,
-          `else`,
-          `  wget -c "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q4_K_M.gguf" -O "${modelDir}/Qwen3.8-27B-UD-Q4_K_M.gguf"`,
-          `  wget -c "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf" -O "${modelDir}/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"`,
+          `Q38_FOUND="$(find -L "${modelDir}" -type f -iname "*Qwen3.8*27B*.gguf" -size +500M 2>/dev/null | head -n 1)"`,
+          `Q36_FOUND="$(find -L "${modelDir}" -type f -iname "*Qwen3.6*35B*.gguf" -size +500M 2>/dev/null | head -n 1)"`,
+          `[ -n "$Q38_FOUND" ] && echo "[FOUND] $Q38_FOUND" || echo "[+] Downloading missing Qwen3.8-27B-UD-Q4_K_M.gguf..."`,
+          `[ -n "$Q36_FOUND" ] && echo "[FOUND] $Q36_FOUND" || echo "[+] Downloading missing Qwen3.6-35B-A3B-UD-Q4_K_M.gguf..."`,
+          `if [ -z "$Q38_FOUND" ] || [ -z "$Q36_FOUND" ]; then`,
+          `  if [ -x "${benchRoot}/.venv-aiperf/bin/python3" ]; then`,
+          `    "${benchRoot}/.venv-aiperf/bin/python3" -c "import huggingface_hub" 2>/dev/null || "${benchRoot}/.venv-aiperf/bin/pip" install "huggingface_hub<2.0"`,
+          `    [ -z "$Q38_FOUND" ] && "${benchRoot}/.venv-aiperf/bin/python3" -c "from huggingface_hub import hf_hub_download; hf_hub_download('unsloth/Qwen3.8-27B-GGUF', 'Qwen3.8-27B-UD-Q4_K_M.gguf', local_dir='${modelDir}')"`,
+          `    [ -z "$Q36_FOUND" ] && "${benchRoot}/.venv-aiperf/bin/python3" -c "from huggingface_hub import hf_hub_download; hf_hub_download('unsloth/Qwen3.6-35B-A3B-GGUF', 'Qwen3.6-35B-A3B-UD-Q4_K_M.gguf', local_dir='${modelDir}')"`,
+          `  else`,
+          `    [ -z "$Q38_FOUND" ] && wget -c "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q4_K_M.gguf" -O "${modelDir}/Qwen3.8-27B-UD-Q4_K_M.gguf"`,
+          `    [ -z "$Q36_FOUND" ] && wget -c "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf" -O "${modelDir}/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"`,
+          `  fi`,
           `fi`,
-          `ls -lh "${modelDir}"/*.gguf`
+          `find -L "${modelDir}" -maxdepth 3 -type f -name "*.gguf" -size +500M -exec ls -lh {} +`
         ].join("\n")
       });
     }
@@ -1659,9 +2011,14 @@
           `  }`,
           `}`,
           `@("${binDir}\\llama-bench.exe", "${binDir}\\llama-server.exe", "${repoDir}\\tools\\server\\bench\\speed-bench\\speed_bench.py") | ForEach-Object { if (Test-Path $_) { Write-Host "[OK] $_" } else { Write-Host "[MISSING] $_ (Run Card 01)" } }`,
-          `Write-Host "=== 3. Active GGUF Model & Models Directory ==="`,
-          `if (Test-Path "${modelPath}") { Write-Host "[OK] Active model found: ${modelPath}" } else { Write-Host "[MISSING] Active model not found: ${modelPath} (Run Card 03 to download)" }`,
-          `Get-ChildItem -Path "${modelDir}" -Filter "*.gguf" -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ("  {0} ({1} GB)" -f $_.FullName, [math]::Round($_.Length / 1GB, 2)) }`,
+          `Write-Host "=== 3. Active GGUF Model & Recursive LM Studio Folder Scan ==="`,
+          `$scanRoot = "${modelDir}"`,
+          `if (Test-Path "$env:USERPROFILE\\.lmstudio\\settings.json") { try { $c = Get-Content "$env:USERPROFILE\\.lmstudio\\settings.json" -Raw | ConvertFrom-Json; if ($c.downloadsFolder -and (Test-Path $c.downloadsFolder) -and ($scanRoot -like "*\\.lmstudio\\models")) { $scanRoot = $c.downloadsFolder } } catch {} }`,
+          `if (Test-Path "${modelPath}") { Write-Host "[OK] Active model found: ${modelPath}" } else {`,
+          `  $alt = Get-ChildItem -Path $scanRoot -Filter "*.gguf" -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq "${state.model.filename}" -or $_.Name -like "*${state.model.alias}*.gguf" } | Where-Object { $_.Name -notmatch '^(mmproj|mtp|projector|draft)[-_.]' -and $_.Length -gt 500MB } | Select-Object -First 1`,
+          `  if ($alt) { Write-Host "[OK] Found matching model under $scanRoot : $($alt.FullName)" } else { Write-Host "[MISSING] Active model not found in $scanRoot : ${modelPath} (Run Card 03 to download)" }`,
+          `}`,
+          `Get-ChildItem -Path $scanRoot -Filter "*.gguf" -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 500MB -and $_.Name -notmatch '^(mmproj|mtp|projector|draft)[-_.]' } | ForEach-Object { Write-Host ("  [MODEL] {0} ({1} GB)" -f $_.FullName, [math]::Round($_.Length / 1GB, 2)) }`,
           `Write-Host "=== 4. Installed Python Versions, Venvs & Packages ==="`,
           `if (Get-Command py -ErrorAction SilentlyContinue) { py -0p } elseif (Get-Command python -ErrorAction SilentlyContinue) { python --version } else { Write-Host "[MISSING] Python 3.12 not installed yet (Run Card 02)" }`,
           `if (Test-Path "${benchRoot}\\.venv-aiperf\\Scripts\\python.exe") {`,
@@ -1689,9 +2046,9 @@
           `echo "=== 2. Git, Binaries & SPEED-Bench Check ==="`,
           `command -v git >/dev/null 2>&1 && echo "[OK] $(git --version)" || (sudo apt update && sudo apt install -y git)`,
           `for f in "${binDir}/llama-bench" "${binDir}/llama-server" "${repoDir}/tools/server/bench/speed-bench/speed_bench.py"; do test -e "$f" && echo "[OK] $f" || echo "[MISSING] $f (Run Card 01)"; done`,
-          `echo "=== 3. Active GGUF Model & Models Directory ==="`,
+          `echo "=== 3. Active GGUF Model & Recursive Folder Scan ==="`,
           `test -f "${modelPath}" && ls -lh "${modelPath}" || echo "[MISSING] Active model not found: ${modelPath} (Run Card 03)"`,
-          `find "${modelDir}" -maxdepth 3 -name "*.gguf" -exec ls -lh {} + 2>/dev/null || true`,
+          `find -L "${modelDir}" -maxdepth 3 -type f -name "*.gguf" -size +500M ! -iname "mmproj*" ! -iname "mtp*" -exec ls -lh {} + 2>/dev/null || true`,
           `echo "=== 4. Python, Venvs & Packages ==="`,
           `python3 --version`,
           `if [ ! -e "${benchRoot}/.venv-aiperf" ] && [ -d "$HOME/.venv-aiperf" ]; then ln -sfn "$HOME/.venv-aiperf" "${benchRoot}/.venv-aiperf"; fi`,
@@ -1820,12 +2177,12 @@
     const kvFactor = kvPrecision === "q4_0" ? 0.28 : kvPrecision === "q8_0" ? 0.53 : 1.0;
 
     const allModels = QUICK_MODELS.slice();
-    (state.customModels || []).forEach((cm, idx) => {
+    [...(state.discoveredModels || []), ...(state.customModels || [])].forEach((cm, idx) => {
       if (!allModels.some((m) => m.alias === cm.alias)) {
         allModels.push({
           id: "custom_" + idx,
           label: cm.alias || cm.slug || "Custom Model " + (idx + 1),
-          quant: "Custom",
+          quant: cm.quant || "Custom",
           kind: "dense",
           alias: cm.alias,
           slug: cm.slug,
@@ -1947,7 +2304,14 @@
     loadSnapshotIDB,
     detectSep,
     joinPath,
+    cleanUserPath,
+    stripTrailingSep,
+    isNonLlmGgufHelper,
     parseModelPath,
+    inferModelsRootFromInput,
+    reRootModelPath,
+    scanModelFolderEntries,
+    resolvePickedModelFile,
     formatShortToken,
     isSuiteCustomized,
     resolveNamingMode,
